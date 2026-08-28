@@ -1,0 +1,4 @@
+# انسخ هذا الملف إلى local.properties وضع مفتاحك
+sdk.dir=/path/to/Android/Sdk
+GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxx
+GROQ_MODEL=llama-3.2-11b-vision-preview
