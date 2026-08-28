@@ -3,11 +3,13 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-val localProperties = java.util.Properties().apply {
-    val file = rootProject.file("local.properties")
-    if (file.exists()) {
-        load(file.inputStream())
-    }
+fun localProp(key: String, default: String = ""): String {
+    val f = rootProject.file("local.properties")
+    if (!f.exists()) return default
+    return f.readLines()
+        .map { it.split("=", limit = 2) }
+        .firstOrNull { it.size == 2 && it[0].trim() == key }
+        ?.get(1)?.trim() ?: default
 }
 
 android {
@@ -21,21 +23,9 @@ android {
         versionCode = 1
         versionName = "2.0"
 
-        buildConfigField(
-            "String",
-            "GROQ_API_KEY",
-            "\"${localProperties.getProperty("GROQ_API_KEY", "")}\""
-        )
-        buildConfigField(
-            "String",
-            "GROQ_MODEL",
-            "\"${localProperties.getProperty("GROQ_MODEL", "llama-3.2-11b-vision-preview")}\""
-        )
-        buildConfigField(
-            "String",
-            "GROQ_BASE_URL",
-            "\"https://api.groq.com/\""
-        )
+        buildConfigField("String", "GROQ_API_KEY", "\"${localProp("GROQ_API_KEY")}\"")
+        buildConfigField("String", "GROQ_MODEL", "\"${localProp("GROQ_MODEL", "llama-3.2-11b-vision-preview")}\"")
+        buildConfigField("String", "GROQ_BASE_URL", "\"https://api.groq.com/\"")
     }
 
     buildFeatures {
