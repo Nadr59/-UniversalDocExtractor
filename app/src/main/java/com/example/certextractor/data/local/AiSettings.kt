@@ -1,9 +1,7 @@
 package com.example.certextractor.data.local
 
 import android.content.Context
-import javax.inject.Singleton
 
-@Singleton
 class AiSettings(context: Context) {
 
     private val prefs = context.getSharedPreferences("ai_settings", Context.MODE_PRIVATE)
