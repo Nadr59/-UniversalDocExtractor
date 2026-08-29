@@ -14,10 +14,17 @@ object ExcelExporter {
         results: List<ExtractionResult>,
         fields: List<ExtractionField>
     ) {
-        val fieldNames = if (fields.isNotEmpty()) {
-            fields.filter { it.enabled }.map { it.name }
-        } else {
-            results.flatMap { it.values.keys }.distinct()
+        // جمع كل المفاتيح الفريدة من النتائج الفعلية
+        val allKeys = mutableListOf<String>()
+        results.forEach { result ->
+            result.values.keys.forEach { key ->
+                if (key !in allKeys) allKeys.add(key)
+            }
+        }
+
+        // إذا لم توجد مفاتيح من النتائج، نستخدم أسماء الحقول المعرّفة
+        if (allKeys.isEmpty() && fields.isNotEmpty()) {
+            allKeys.addAll(fields.filter { it.enabled }.map { it.name })
         }
 
         val html = buildString {
@@ -29,37 +36,38 @@ object ExcelExporter {
             append("th { background-color: #1565C0; color: white; font-weight: bold; padding: 8px; text-align: right; border: 1px solid #0D47A1; }")
             append("td { border: 1px solid #ddd; padding: 6px; text-align: right; }")
             append("tr:nth-child(even) { background-color: #f5f5f5; }")
-            append(".success { color: #2E7D32; font-weight: bold; }")
-            append(".error { color: #C62828; font-weight: bold; }")
+            append(".ok { color: #2E7D32; font-weight: bold; }")
+            append(".err { color: #C62828; font-weight: bold; }")
             append("</style>")
             append("</head>")
             append("<body>")
 
-            val successCount = results.count { it.status == "success" }
-            append("<p>")
-            append("Total: ${results.size} | OK: $successCount | Errors: ${results.size - successCount}")
-            append("</p>")
+            val okCount = results.count { it.status == "success" }
+            append("<p>المجموع: ${results.size} | ناجح: $okCount | أخطاء: ${results.size - okCount}</p>")
 
             append("<table>")
+
+            // العناوين
             append("<tr>")
             append("<th>#</th>")
-            append("<th>${esc("File")}</th>")
-            fieldNames.forEach { name ->
-                append("<th>${esc(name)}</th>")
+            append("<th>${esc("اسم الملف")}</th>")
+            allKeys.forEach { key ->
+                append("<th>${esc(key)}</th>")
             }
-            append("<th>${esc("Status")}</th>")
-            append("<th>${esc("Notes")}</th>")
+            append("<th>${esc("الحالة")}</th>")
+            append("<th>${esc("ملاحظات")}</th>")
             append("</tr>")
 
+            // البيانات
             results.forEachIndexed { index, result ->
-                val cls = if (result.status == "success") "success" else "error"
-                val txt = if (result.status == "success") "OK" else "Error"
+                val cls = if (result.status == "success") "ok" else "err"
+                val txt = if (result.status == "success") "ناجح" else "خطأ"
 
                 append("<tr>")
                 append("<td>${index + 1}</td>")
                 append("<td>${esc(result.fileName)}</td>")
-                fieldNames.forEach { fieldName ->
-                    val value = result.values[fieldName] ?: ""
+                allKeys.forEach { key ->
+                    val value = result.values[key] ?: ""
                     append("<td>${esc(value)}</td>")
                 }
                 append("<td class=\"$cls\">$txt</td>")
