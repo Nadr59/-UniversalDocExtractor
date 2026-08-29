@@ -1,0 +1,363 @@
+package com.example.certextractor.ui
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.dp
+import com.example.certextractor.data.local.AiSettings
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsScreen(
+    settings: AiSettings,
+    onBack: () -> Unit
+) {
+    var provider by remember { mutableStateOf(settings.provider) }
+    var groqKey by remember { mutableStateOf(settings.groqKey) }
+    var groqModel by remember { mutableStateOf(settings.groqModel) }
+    var openrouterKey by remember { mutableStateOf(settings.openrouterKey) }
+    var openrouterModel by remember { mutableStateOf(settings.openrouterModel) }
+    var openaiKey by remember { mutableStateOf(settings.openaiKey) }
+    var openaiModel by remember { mutableStateOf(settings.openaiModel) }
+    var geminiKey by remember { mutableStateOf(settings.geminiKey) }
+    var geminiModel by remember { mutableStateOf(settings.geminiModel) }
+    var mistralKey by remember { mutableStateOf(settings.mistralKey) }
+    var mistralModel by remember { mutableStateOf(settings.mistralModel) }
+    var customUrl by remember { mutableStateOf(settings.customUrl) }
+    var customKey by remember { mutableStateOf(settings.customKey) }
+    var customModel by remember { mutableStateOf(settings.customModel) }
+    var showKeys by remember { mutableStateOf(false) }
+    var saved by remember { mutableStateOf(false) }
+
+    val providers = listOf(
+        "groq" to "Groq (Free - Fastest)",
+        "openrouter" to "OpenRouter",
+        "openai" to "OpenAI (ChatGPT)",
+        "gemini" to "Google Gemini",
+        "mistral" to "Mistral AI",
+        "custom" to "Custom (OpenAI Compatible)"
+    )
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("AI Settings") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, "Back")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text("Provider:", fontWeight = FontWeight.Bold)
+
+            providers.forEach { (key, name) ->
+                Card(
+                    onClick = { provider = key; saved = false },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (provider == key)
+                            MaterialTheme.colorScheme.primaryContainer
+                        else
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = provider == key,
+                            onClick = { provider = key; saved = false }
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            name,
+                            fontWeight = if (provider == key) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                }
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("API Keys:", fontWeight = FontWeight.Bold)
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { showKeys = !showKeys }) {
+                    Icon(
+                        if (showKeys) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                        contentDescription = null
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(if (showKeys) "Hide" else "Show")
+                }
+            }
+
+            when (provider) {
+                "groq" -> {
+                    InfoCard("Groq is completely free. Get key at console.groq.com/keys")
+                    KeyField("Groq API Key", groqKey, { groqKey = it; saved = false }, showKeys, "gsk_...")
+                    VisionModelDropdown(
+                        label = "Vision Model",
+                        models = listOf(
+                            "llama-3.2-11b-vision-preview" to "Llama 3.2 11B Vision",
+                            "llama-3.2-90b-vision-preview" to "Llama 3.2 90B Vision",
+                            "meta-llama/llama-4-scout-17b-16e-instruct" to "Llama 4 Scout 17B"
+                        ),
+                        selected = groqModel,
+                        onSelect = { groqModel = it; saved = false }
+                    )
+                }
+                "openrouter" -> {
+                    InfoCard("Get key at openrouter.ai/keys. Add credits at openrouter.ai/credits")
+                    KeyField("OpenRouter API Key", openrouterKey, { openrouterKey = it; saved = false }, showKeys, "sk-or-...")
+                    VisionModelDropdown(
+                        label = "Vision Model",
+                        models = listOf(
+                            "google/gemini-2.0-flash-exp:free" to "Gemini 2.0 Flash (Free)",
+                            "meta-llama/llama-3.2-11b-vision-instruct" to "Llama 3.2 11B Vision",
+                            "mistralai/pixtral-12b" to "Pixtral 12B"
+                        ),
+                        selected = openrouterModel,
+                        onSelect = { openrouterModel = it; saved = false }
+                    )
+                    OutlinedTextField(
+                        value = openrouterModel,
+                        onValueChange = { openrouterModel = it; saved = false },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Or type model name") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
+                "openai" -> {
+                    KeyField("OpenAI API Key", openaiKey, { openaiKey = it; saved = false }, showKeys, "sk-...")
+                    VisionModelDropdown(
+                        label = "Vision Model",
+                        models = listOf(
+                            "gpt-4o-mini" to "GPT-4o Mini",
+                            "gpt-4o" to "GPT-4o",
+                            "gpt-4-turbo" to "GPT-4 Turbo"
+                        ),
+                        selected = openaiModel,
+                        onSelect = { openaiModel = it; saved = false }
+                    )
+                }
+                "gemini" -> {
+                    InfoCard("Get key at aistudio.google.com/apikey")
+                    KeyField("Gemini API Key", geminiKey, { geminiKey = it; saved = false }, showKeys, "AIza...")
+                    VisionModelDropdown(
+                        label = "Vision Model",
+                        models = listOf(
+                            "gemini-2.0-flash" to "Gemini 2.0 Flash",
+                            "gemini-1.5-flash" to "Gemini 1.5 Flash",
+                            "gemini-1.5-pro" to "Gemini 1.5 Pro"
+                        ),
+                        selected = geminiModel,
+                        onSelect = { geminiModel = it; saved = false }
+                    )
+                }
+                "mistral" -> {
+                    KeyField("Mistral API Key", mistralKey, { mistralKey = it; saved = false }, showKeys, "key...")
+                    VisionModelDropdown(
+                        label = "Vision Model",
+                        models = listOf(
+                            "pixtral-12b-2409" to "Pixtral 12B"
+                        ),
+                        selected = mistralModel,
+                        onSelect = { mistralModel = it; saved = false }
+                    )
+                }
+                "custom" -> {
+                    OutlinedTextField(
+                        value = customUrl,
+                        onValueChange = { customUrl = it; saved = false },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Server URL") },
+                        placeholder = { Text("https://api.example.com") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    KeyField("API Key", customKey, { customKey = it; saved = false }, showKeys, "key...")
+                    OutlinedTextField(
+                        value = customModel,
+                        onValueChange = { customModel = it; saved = false },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Model Name") },
+                        placeholder = { Text("gpt-4o-mini") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            Button(
+                onClick = {
+                    settings.provider = provider
+                    settings.groqKey = groqKey
+                    settings.groqModel = groqModel
+                    settings.openrouterKey = openrouterKey
+                    settings.openrouterModel = openrouterModel
+                    settings.openaiKey = openaiKey
+                    settings.openaiModel = openaiModel
+                    settings.geminiKey = geminiKey
+                    settings.geminiModel = geminiModel
+                    settings.mistralKey = mistralKey
+                    settings.mistralModel = mistralModel
+                    settings.customUrl = customUrl
+                    settings.customKey = customKey
+                    settings.customModel = customModel
+                    saved = true
+                },
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(Icons.Default.Save, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Save Settings", fontWeight = FontWeight.Bold)
+            }
+
+            if (saved) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.CheckCircle, null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Settings saved!", color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(32.dp))
+        }
+    }
+}
+
+@Composable
+private fun InfoCard(text: String) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+        ),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Text(text, Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun KeyField(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    showKey: Boolean,
+    placeholder: String
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = Modifier.fillMaxWidth(),
+        label = { Text(label) },
+        placeholder = { Text(placeholder) },
+        singleLine = true,
+        visualTransformation = if (showKey) VisualTransformation.None
+        else PasswordVisualTransformation(),
+        shape = RoundedCornerShape(12.dp)
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun VisionModelDropdown(
+    label: String,
+    models: List<Pair<String, String>>,
+    selected: String,
+    onSelect: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = !expanded }
+    ) {
+        OutlinedTextField(
+            value = models.find { it.first == selected }?.second ?: selected,
+            onValueChange = {},
+            readOnly = true,
+            modifier = Modifier.fillMaxWidth().menuAnchor(),
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+            shape = RoundedCornerShape(12.dp),
+            label = { Text(label) }
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            models.forEach { (id, name) ->
+                DropdownMenuItem(
+                    text = { Text(name) },
+                    onClick = { onSelect(id); expanded = false }
+                )
+            }
+        }
+    }
+}
