@@ -404,9 +404,11 @@ class DocumentRepository(private val context: Context) {
         return sampleSize
     }
 
-    private fun parseResponse(content: String, fileName: String): ExtractionResult {
+        private fun parseResponse(content: String, fileName: String): ExtractionResult {
+        val cleaned = extractJson(content)
+
         return try {
-            val json = gson.fromJson(content, com.google.gson.JsonObject::class.java)
+            val json = gson.fromJson(cleaned, com.google.gson.JsonObject::class.java)
             val values = mutableMapOf<String, String>()
 
             json.entrySet().forEach { entry ->
@@ -438,23 +440,33 @@ class DocumentRepository(private val context: Context) {
         }
     }
 
-    suspend fun processBatch(
-        uris: List<Uri>,
-        fields: List<ExtractionField>,
-        freeTextPrompt: String?,
-        isFreeTextMode: Boolean,
-        onProgress: (current: Int, total: Int, result: ExtractionResult) -> Unit
-    ): List<ExtractionResult> {
-        val results = mutableListOf<ExtractionResult>()
+    private fun extractJson(raw: String): String {
+        var text = raw.trim()
 
-        uris.forEachIndexed { index, uri ->
-            val fileName = "document_" + (index + 1)
-            val result = processDocument(uri, fileName, fields, freeTextPrompt, isFreeTextMode)
-            results.add(result)
-            onProgress(index + 1, uris.size, result)
-            if (index < uris.lastIndex) delay(2500)
+        // Remove markdown code blocks: ```json ... ``` or ``` ... ```
+        if (text.contains("```")) {
+            val start = text.indexOf("```")
+            var afterStart = start + 3
+            // skip language tag like "json" after ```
+            if (afterStart < text.length && text[afterStart] != '\n') {
+                val newline = text.indexOf('\n', afterStart)
+                if (newline != -1) afterStart = newline + 1
+            }
+            val end = text.indexOf("```", afterStart)
+            if (end != -1) {
+                text = text.substring(afterStart, end).trim()
+            } else {
+                text = text.substring(afterStart).trim()
+            }
         }
 
-        return results
+        // Try to find JSON object boundaries { ... }
+        val firstBrace = text.indexOf('{')
+        val lastBrace = text.lastIndexOf('}')
+
+        if (firstBrace != -1 && lastBrace != -1 && lastBrace > firstBrace) {
+            text = text.substring(firstBrace, lastBrace + 1)
+        }
+
+        return text
     }
-}
