@@ -14,28 +14,36 @@ object CsvExporter {
         results: List<ExtractionResult>,
         fields: List<ExtractionField>
     ) {
+        // جمع كل المفاتيح الفريدة من النتائج الفعلية
+        val allKeys = mutableListOf<String>()
+        results.forEach { result ->
+            result.values.keys.forEach { key ->
+                if (key !in allKeys) allKeys.add(key)
+            }
+        }
+
+        // إذا لم توجد مفاتيح من النتائج، نستخدم أسماء الحقول المعرّفة
+        if (allKeys.isEmpty() && fields.isNotEmpty()) {
+            allKeys.addAll(fields.filter { it.enabled }.map { it.name })
+        }
+
         context.contentResolver.openOutputStream(uri)?.use { outputStream ->
             OutputStreamWriter(outputStream, Charsets.UTF_8).use { writer ->
+                // BOM for Arabic support in Excel
                 writer.write("\uFEFF")
 
-                val fieldNames = if (fields.isNotEmpty()) {
-                    fields.filter { it.enabled }.map { it.name }
-                } else {
-                    results.flatMap { it.values.keys }.distinct()
-                }
-
-                val headers = listOf("اسم الملف") + fieldNames + listOf("الحالة", "الخطأ")
-                writer.write(headers.joinToString(",") { escapeCsv(it) })
+                val headers = listOf("اسم الملف") + allKeys + listOf("الحالة", "الخطأ")
+                writer.write(headers.joinToString(",") { esc(it) })
                 writer.write("\n")
 
                 results.forEach { result ->
                     val row = mutableListOf<String>()
-                    row.add(escapeCsv(result.fileName))
-                    fieldNames.forEach { fieldName ->
-                        row.add(escapeCsv(result.values[fieldName] ?: ""))
+                    row.add(esc(result.fileName))
+                    allKeys.forEach { key ->
+                        row.add(esc(result.values[key] ?: ""))
                     }
-                    row.add(escapeCsv(translateStatus(result.status)))
-                    row.add(escapeCsv(result.errorMessage))
+                    row.add(esc(transStatus(result.status)))
+                    row.add(esc(result.errorMessage))
                     writer.write(row.joinToString(","))
                     writer.write("\n")
                 }
@@ -45,7 +53,7 @@ object CsvExporter {
         }
     }
 
-    private fun escapeCsv(value: String): String {
+    private fun esc(value: String): String {
         val cleaned = value.replace("\n", " ").replace("\r", "")
         return if (cleaned.contains(",") || cleaned.contains("\"")) {
             "\"${cleaned.replace("\"", "\"\"")}\""
@@ -54,7 +62,7 @@ object CsvExporter {
         }
     }
 
-    private fun translateStatus(status: String): String {
+    private fun transStatus(status: String): String {
         return when (status) {
             "success" -> "تم بنجاح"
             "error" -> "خطأ"
