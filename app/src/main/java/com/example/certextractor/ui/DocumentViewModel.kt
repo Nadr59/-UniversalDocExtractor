@@ -19,10 +19,11 @@ enum class ExtractionMode { FIELDS, FREE_TEXT }
 
 data class DocumentUiState(
     val fields: List<ExtractionField> = listOf(
-        ExtractionField(name = "Name", description = "Full name of the person"),
-        ExtractionField(name = "Date", description = "Issue date or mentioned date"),
-        ExtractionField(name = "Number", description = "Reference or document number"),
-        ExtractionField(name = "Issuer", description = "Issuing organization")
+        ExtractionField(name = "اسم الطالب", description = "الاسم الكامل للطالب"),
+        ExtractionField(name = "رقم القيد", description = "رقم القيد أو التسجيل"),
+        ExtractionField(name = "المدرسة", description = "اسم المدرسة"),
+        ExtractionField(name = "المعدل", description = "المعدل أو النسبة"),
+        ExtractionField(name = "التاريخ", description = "تاريخ الإصدار أو السنة الدراسية")
     ),
     val results: List<ExtractionResult> = emptyList(),
     val selectedUris: List<Uri> = emptyList(),
