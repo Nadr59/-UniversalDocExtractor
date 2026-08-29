@@ -7,7 +7,7 @@ class AiSettings(context: Context) {
     private val prefs = context.getSharedPreferences("ai_settings", Context.MODE_PRIVATE)
 
     var provider: String
-        get() = prefs.getString("provider", "groq") ?: "groq"
+        get() = prefs.getString("provider", "gemini") ?: "gemini"
         set(value) = prefs.edit().putString("provider", value).apply()
 
     var groqKey: String
@@ -15,7 +15,7 @@ class AiSettings(context: Context) {
         set(value) = prefs.edit().putString("groq_key", value).apply()
 
     var groqModel: String
-                get() = prefs.getString("groq_model", "llama-4-scout-17b-16e-instruct") ?: "llama-4-scout-17b-16e-instruct"
+        get() = prefs.getString("groq_model", "openai/gpt-oss-120b") ?: "openai/gpt-oss-120b"
         set(value) = prefs.edit().putString("groq_model", value).apply()
 
     var openrouterKey: String
@@ -23,7 +23,7 @@ class AiSettings(context: Context) {
         set(value) = prefs.edit().putString("openrouter_key", value).apply()
 
     var openrouterModel: String
-        get() = prefs.getString("openrouter_model", "google/gemini-2.0-flash-exp:free") ?: "google/gemini-2.0-flash-exp:free"
+        get() = prefs.getString("openrouter_model", "google/gemini-2.5-flash-preview:free") ?: "google/gemini-2.5-flash-preview:free"
         set(value) = prefs.edit().putString("openrouter_model", value).apply()
 
     var openaiKey: String
@@ -39,7 +39,7 @@ class AiSettings(context: Context) {
         set(value) = prefs.edit().putString("gemini_key", value).apply()
 
     var geminiModel: String
-        get() = prefs.getString("gemini_model", "gemini-2.0-flash") ?: "gemini-2.0-flash"
+        get() = prefs.getString("gemini_model", "gemini-2.5-flash") ?: "gemini-2.5-flash"
         set(value) = prefs.edit().putString("gemini_model", value).apply()
 
     var mistralKey: String
