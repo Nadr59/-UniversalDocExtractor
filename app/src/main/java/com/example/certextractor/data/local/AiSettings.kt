@@ -15,7 +15,7 @@ class AiSettings(context: Context) {
         set(value) = prefs.edit().putString("groq_key", value).apply()
 
     var groqModel: String
-        get() = prefs.getString("groq_model", "llama-3.2-11b-vision-preview") ?: "llama-3.2-11b-vision-preview"
+                get() = prefs.getString("groq_model", "llama-4-scout-17b-16e-instruct") ?: "llama-4-scout-17b-16e-instruct"
         set(value) = prefs.edit().putString("groq_model", value).apply()
 
     var openrouterKey: String
