@@ -154,7 +154,7 @@ class DocumentRepository(private val context: Context) {
                     })
                     put("generationConfig", JSONObject().apply {
                         put("temperature", 0.1)
-                        put("maxOutputTokens", 1024)
+                        put("maxOutputTokens", 4096)
                         put("responseMimeType", "application/json")
                     })
                 }
@@ -385,7 +385,7 @@ class DocumentRepository(private val context: Context) {
                 })
             })
             put("temperature", 0.1)
-            put("max_tokens", 1024)
+            put("max_tokens", 4096)
         }
 
         OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use {
@@ -505,49 +505,101 @@ class DocumentRepository(private val context: Context) {
      * - Text with JSON embedded
      * - JSON wrapped in extra text
      */
-    private fun extractJson(raw: String): String {
+        private fun extractJson(raw: String): String {
         var text = raw.trim()
 
-        // 1. Remove markdown code blocks: ```json ... ``` or ``` ... ```
+        // 1. Remove markdown code blocks
         if (text.contains("```")) {
             val start = text.indexOf("```")
             var afterStart = start + 3
-
-            // Skip language tag after ```
             if (afterStart < text.length && text[afterStart] != '\n') {
                 val newline = text.indexOf('\n', afterStart)
-                if (newline != -1) {
-                    afterStart = newline + 1
-                }
+                if (newline != -1) afterStart = newline + 1
             }
-
             val end = text.indexOf("```", afterStart)
-            if (end != -1) {
-                text = text.substring(afterStart, end).trim()
+            text = if (end != -1) {
+                text.substring(afterStart, end).trim()
             } else {
-                text = text.substring(afterStart).trim()
+                text.substring(afterStart).trim()
             }
         }
 
-        // 2. Try to find JSON object boundaries { ... }
+        // 2. Find JSON object boundaries
         val firstBrace = text.indexOf('{')
         val lastBrace = text.lastIndexOf('}')
 
         if (firstBrace != -1 && lastBrace != -1 && lastBrace > firstBrace) {
             text = text.substring(firstBrace, lastBrace + 1)
-        }
-
-        // 3. Try to find JSON array if no object found [ ... ]
-        if (!text.startsWith("{")) {
-            val firstBracket = text.indexOf('[')
-            val lastBracket = text.lastIndexOf(']')
-
-            if (firstBracket != -1 && lastBracket != -1 && lastBracket > firstBracket) {
-                text = text.substring(firstBracket, lastBracket + 1)
-            }
+        } else if (firstBrace != -1) {
+            // JSON truncated — try to repair it
+            text = text.substring(firstBrace)
+            text = repairJson(text)
         }
 
         return text
+    }
+
+    /**
+     * Try to repair truncated JSON by closing unclosed braces and quotes
+     */
+    private fun repairJson(text: String): String {
+        var result = text.trim()
+
+        // If ends mid-value (no closing quote), add one
+        val openQuotes = countUnescapedQuotes(result)
+        if (openQuotes % 2 != 0) {
+            result += "\""
+        }
+
+        // Count open braces vs close braces
+        var braceCount = 0
+        var inString = false
+        var escape = false
+
+        for (c in result) {
+            if (escape) {
+                escape = false
+                continue
+            }
+            if (c == '\\' && inString) {
+                escape = true
+                continue
+            }
+            if (c == '"') {
+                inString = !inString
+                continue
+            }
+            if (!inString) {
+                when (c) {
+                    '{' -> braceCount++
+                    '}' -> braceCount--
+                }
+            }
+        }
+
+        // Close unclosed braces
+        repeat(braceCount) {
+            result += "}"
+        }
+
+        return result
+    }
+
+    private fun countUnescapedQuotes(text: String): Int {
+        var count = 0
+        var escape = false
+        for (c in text) {
+            if (escape) {
+                escape = false
+                continue
+            }
+            if (c == '\\') {
+                escape = true
+                continue
+            }
+            if (c == '"') count++
+        }
+        return count
     }
 
     // ═══════════════════════════════════════
