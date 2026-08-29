@@ -18,10 +18,10 @@ enum class ExtractionMode { FIELDS, FREE_TEXT }
 
 data class DocumentUiState(
     val fields: List<ExtractionField> = listOf(
-        ExtractionField(name = "الاسم", description = "الاسم الكامل للشخص"),
-        ExtractionField(name = "التاريخ", description = "تاريخ الإصدار أو التاريخ المذكورة في الوثيقة"),
-        ExtractionField(name = "الرقم", description = "أي رقم مرجعي أو رقم وثيقة أو رقم شهادة"),
-        ExtractionField(name = "الجهة", description = "الجهة أو المؤسسة المصدرة للوثيقة")
+        ExtractionField(name = "Name", description = "Full name of the person"),
+        ExtractionField(name = "Date", description = "Issue date or mentioned date"),
+        ExtractionField(name = "Number", description = "Reference or document number"),
+        ExtractionField(name = "Issuer", description = "Issuing organization")
     ),
     val results: List<ExtractionResult> = emptyList(),
     val selectedUris: List<Uri> = emptyList(),
@@ -47,7 +47,13 @@ class DocumentViewModel(application: Application) : AndroidViewModel(application
 
     fun clearAll() {
         _uiState.update {
-            it.copy(results = emptyList(), selectedUris = emptyList(), progress = 0, total = 0, message = "")
+            it.copy(
+                results = emptyList(),
+                selectedUris = emptyList(),
+                progress = 0,
+                total = 0,
+                message = ""
+            )
         }
     }
 
@@ -63,54 +69,83 @@ class DocumentViewModel(application: Application) : AndroidViewModel(application
         if (name.isBlank()) return
         _uiState.update { state ->
             state.copy(
-                fields = state.fields + ExtractionField(id = UUID.randomUUID().toString(), name = name.trim(), description = description.trim()),
+                fields = state.fields + ExtractionField(
+                    id = UUID.randomUUID().toString(),
+                    name = name.trim(),
+                    description = description.trim()
+                ),
                 showAddFieldDialog = false
             )
         }
     }
 
     fun removeField(id: String) {
-        _uiState.update { state -> state.copy(fields = state.fields.filter { it.id != id }) }
+        _uiState.update { state ->
+            state.copy(fields = state.fields.filter { it.id != id })
+        }
     }
 
     fun toggleField(id: String) {
         _uiState.update { state ->
-            state.copy(fields = state.fields.map { if (it.id == id) it.copy(enabled = !it.enabled) else it })
+            state.copy(
+                fields = state.fields.map { field ->
+                    if (field.id == id) field.copy(enabled = !field.enabled) else field
+                }
+            )
         }
     }
 
     fun updateField(id: String, name: String, description: String) {
         _uiState.update { state ->
             state.copy(
-                fields = state.fields.map { if (it.id == id) it.copy(name = name.trim(), description = description.trim()) else it },
+                fields = state.fields.map { field ->
+                    if (field.id == id) field.copy(
+                        name = name.trim(),
+                        description = description.trim()
+                    ) else field
+                },
                 editingField = null
             )
         }
     }
 
-    fun showAddFieldDialog() { _uiState.update { it.copy(showAddFieldDialog = true) } }
-    fun startEditingField(field: ExtractionField) { _uiState.update { it.copy(editingField = field) } }
-    fun dismissDialog() { _uiState.update { it.copy(showAddFieldDialog = false, editingField = null) } }
+    fun showAddFieldDialog() {
+        _uiState.update { it.copy(showAddFieldDialog = true) }
+    }
+
+    fun startEditingField(field: ExtractionField) {
+        _uiState.update { it.copy(editingField = field) }
+    }
+
+    fun dismissDialog() {
+        _uiState.update { it.copy(showAddFieldDialog = false, editingField = null) }
+    }
 
     fun processDocuments() {
         val state = _uiState.value
 
         if (state.selectedUris.isEmpty()) {
-            _uiState.update { it.copy(message = "اختر الملفات أولاً") }
+            _uiState.update { it.copy(message = "Select files first") }
             return
         }
         if (state.extractionMode == ExtractionMode.FIELDS && state.fields.none { it.enabled }) {
-            _uiState.update { it.copy(message = "فعّل حقل واحد على الأقل") }
+            _uiState.update { it.copy(message = "Enable at least one field") }
             return
         }
         if (state.extractionMode == ExtractionMode.FREE_TEXT && state.freeTextPrompt.isBlank()) {
-            _uiState.update { it.copy(message = "اكتب طلب الاستخراج") }
+            _uiState.update { it.copy(message = "Write extraction prompt") }
             return
         }
 
         viewModelScope.launch {
             _uiState.update {
-                it.copy(isProcessing = true, results = emptyList(), progress = 0, total = state.selectedUris.size, message = "جاري المعالجة...")
+                it.copy(
+                    isProcessing = true,
+                    results = emptyList(),
+                    progress = 0,
+                    total = state.selectedUris.size,
+                    message = "Processing..."
+                )
             }
 
             repository.processBatch(
@@ -119,15 +154,24 @@ class DocumentViewModel(application: Application) : AndroidViewModel(application
                 freeTextPrompt = state.freeTextPrompt,
                 isFreeTextMode = state.extractionMode == ExtractionMode.FREE_TEXT,
                 onProgress = { current, total, result ->
-                    _uiState.update {
-                        it.copy(progress = current, results = it.results + result, message = "تمت معالجة $current من $total")
+                    _uiState.update { s ->
+                        s.copy(
+                            progress = current,
+                            results = s.results + result,
+                            message = "Processed " + current + " of " + total
+                        )
                     }
                 }
             )
 
             val successCount = _uiState.value.results.count { it.status == "success" }
             val totalCount = _uiState.value.results.size
-            _uiState.update { it.copy(isProcessing = false,   = "اكتمل! $successCount/$totalCount بنجاح") }
+            _uiState.update {
+                it.copy(
+                    isProcessing = false,
+                    message = "Done! " + successCount + "/" + totalCount + " succeeded"
+                )
+            }
         }
     }
 }
