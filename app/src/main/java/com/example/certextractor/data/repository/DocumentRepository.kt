@@ -8,6 +8,7 @@ import android.util.Base64
 import com.example.certextractor.BuildConfig
 import com.example.certextractor.data.model.ExtractionField
 import com.example.certextractor.data.model.ExtractionResult
+import com.example.certextractor.data.model.GroqResponse
 import com.example.certextractor.data.network.GroqApiService
 import com.example.certextractor.utils.DynamicPromptBuilder
 import com.google.gson.Gson
@@ -26,11 +27,11 @@ import java.util.concurrent.TimeUnit
 
 class DocumentRepository(private val context: Context) {
 
-    private val apiKey = BuildConfig.GROQ_API_KEY
-    private val modelName = BuildConfig.GROQ_MODEL
-    private val baseUrl = BuildConfig.GROQ_BASE_URL
+    private val apiKey: String = BuildConfig.GROQ_API_KEY
+    private val modelName: String = BuildConfig.GROQ_MODEL
+    private val baseUrl: String = BuildConfig.GROQ_BASE_URL
 
-    private val client = OkHttpClient.Builder()
+    private val client: OkHttpClient = OkHttpClient.Builder()
         .addInterceptor(
             HttpLoggingInterceptor().apply {
                 level = HttpLoggingInterceptor.Level.BASIC
@@ -41,14 +42,14 @@ class DocumentRepository(private val context: Context) {
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    private val retrofit = Retrofit.Builder()
+    private val retrofit: Retrofit = Retrofit.Builder()
         .baseUrl(baseUrl)
         .client(client)
         .addConverterFactory(GsonConverterFactory.create())
         .build()
 
-    private val apiService = retrofit.create(GroqApiService::class.java)
-    private val gson = Gson()
+    private val apiService: GroqApiService = retrofit.create(GroqApiService::class.java)
+    private val gson: Gson = Gson()
 
     suspend fun processDocument(
         uri: Uri,
@@ -63,48 +64,57 @@ class DocumentRepository(private val context: Context) {
                     return@withContext ExtractionResult(
                         fileName = fileName,
                         status = "error",
-                        errorMessage = "مفتاح API غير محدد. أضف GROQ_API_KEY في local.properties"
+                        errorMessage = "API key not configured"
                     )
                 }
 
-                val base64Image = uriToBase64(uri)
-                val request = buildRequest(base64Image, fields, freeTextPrompt, isFreeTextMode)
-                val response = apiService.extractData("Bearer $apiKey", request)
+                val base64Image: String = uriToBase64(uri)
+                val request: JsonObject = buildRequest(base64Image, fields, freeTextPrompt, isFreeTextMode)
+                val response: GroqResponse = apiService.extractData("Bearer $apiKey", request)
                 parseResponse(response, fileName)
 
             } catch (e: HttpException) {
-                val message = when (e.code()) {
-                    429 -> "تم تجاوز حد الطلبات. انتظر قليلاً ثم حاول مرة أخرى."
-                    401 -> "مفتاح API غير صالح."
-                    413 -> "الصورة كبيرة جداً. قلّص الحجم وحاول مرة أخرى."
-                    else -> "خطأ في الخادم: ${e.code()}"
+                val msg: String = when (e.code()) {
+                    429 -> "Rate limit exceeded. Wait and retry."
+                    401 -> "Invalid API key."
+                    413 -> "Image too large."
+                    else -> "Server error: ${e.code()}"
                 }
-                ExtractionResult(fileName = fileName, status = "error", errorMessage = message)
+                ExtractionResult(fileName = fileName, status = "error", errorMessage = msg)
             } catch (e: Exception) {
-                ExtractionResult(fileName = fileName, status = "error", errorMessage = e.message ?: "خطأ غير معروف")
+                ExtractionResult(
+                    fileName = fileName,
+                    status = "error",
+                    errorMessage = e.message ?: "Unknown error"
+                )
             }
         }
     }
 
     private fun uriToBase64(uri: Uri): String {
         val inputStream = context.contentResolver.openInputStream(uri)
-            ?: throw IllegalStateException("لا يمكن فتح الملف")
+            ?: throw IllegalStateException("Cannot open file")
 
-        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeStream(inputStream, null, options)
+        val boundsOptions = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        BitmapFactory.decodeStream(inputStream, null, boundsOptions)
         inputStream.close()
 
-        val sampleSize = calculateSampleSize(options.outWidth, options.outHeight, 2048)
-        val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        val sampleSize: Int = calculateSampleSize(boundsOptions.outWidth, boundsOptions.outHeight, 2048)
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+        }
 
-        val inputStream2 = context.contentResolver.openInputStream(uri)
-            ?: throw IllegalStateException("لا يمكن فتح الملف")
-        val bitmap = BitmapFactory.decodeStream(inputStream2, null, decodeOptions)
-        inputStream2.close()
+        val stream2 = context.contentResolver.openInputStream(uri)
+            ?: throw IllegalStateException("Cannot reopen file")
+        val bitmap: Bitmap = BitmapFactory.decodeStream(stream2, null, decodeOptions)
+            ?: throw IllegalStateException("Cannot decode image")
+        stream2.close()
 
         val outputStream = ByteArrayOutputStream()
         bitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream)
-        val byteArray = outputStream.toByteArray()
+        val byteArray: ByteArray = outputStream.toByteArray()
         bitmap.recycle()
 
         return Base64.encodeToString(byteArray, Base64.NO_WRAP)
@@ -124,7 +134,7 @@ class DocumentRepository(private val context: Context) {
         freeTextPrompt: String?,
         isFreeTextMode: Boolean
     ): JsonObject {
-        val prompt = if (isFreeTextMode) {
+        val prompt: String = if (isFreeTextMode) {
             DynamicPromptBuilder.buildFreeTextPrompt(freeTextPrompt ?: "")
         } else {
             DynamicPromptBuilder.buildFieldsPrompt(fields)
@@ -161,24 +171,23 @@ class DocumentRepository(private val context: Context) {
         }
     }
 
-    private fun parseResponse(
-        response: com.example.certextractor.data.model.GroqResponse,
-        fileName: String
-    ): ExtractionResult {
-        val content = response.choices.firstOrNull()?.message?.content ?: ""
+    private fun parseResponse(response: GroqResponse, fileName: String): ExtractionResult {
+        val content: String = response.choices.firstOrNull()?.message?.content ?: ""
 
         return try {
-            val json = gson.fromJson(content, JsonObject::class.java)
+            val json: JsonObject = gson.fromJson(content, JsonObject::class.java)
             val values = mutableMapOf<String, String>()
 
-            json.entrySet().forEach { (key, value) ->
+            json.entrySet().forEach { entry ->
+                val key: String = entry.key
+                val value = entry.value
                 values[key] = when {
                     value.isJsonNull -> ""
                     value.isJsonArray -> {
                         value.asJsonArray.joinToString(" | ") { element ->
                             if (element.isJsonObject) {
-                                element.asJsonObject.entrySet().joinToString(", ") { (k, v) ->
-                                    "$k: ${v.asString}"
+                                element.asJsonObject.entrySet().joinToString(", ") { e ->
+                                    e.key + ": " + e.value.asString
                                 }
                             } else {
                                 element.asString
@@ -191,7 +200,11 @@ class DocumentRepository(private val context: Context) {
 
             ExtractionResult(fileName = fileName, values = values, status = "success")
         } catch (e: Exception) {
-            ExtractionResult(fileName = fileName, status = "error", errorMessage = "خطأ في تحليل JSON: ${e.message}")
+            ExtractionResult(
+                fileName = fileName,
+                status = "error",
+                errorMessage = "JSON parse error: " + e.message
+            )
         }
     }
 
@@ -205,7 +218,7 @@ class DocumentRepository(private val context: Context) {
         val results = mutableListOf<ExtractionResult>()
 
         uris.forEachIndexed { index, uri ->
-            val fileName = "document_${index + 1}"
+            val fileName = "document_" + (index + 1)
             val result = processDocument(uri, fileName, fields, freeTextPrompt, isFreeTextMode)
             results.add(result)
             onProgress(index + 1, uris.size, result)
