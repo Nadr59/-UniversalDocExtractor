@@ -76,14 +76,12 @@ class DocumentRepository(private val context: Context) {
         }
     }
 
-        private fun callGroqVision(prompt: String, base64Image: String): String {
+            private fun callGroqVision(prompt: String, base64Image: String): String {
         val modelsToTry = mutableListOf(settings.groqModel.trim())
         val fallbacks = listOf(
-            "llama-4-scout-17b-16e-instruct",
-            "llama-3.3-70b-versatile",
-            "llama-3.1-8b-instant",
-            "gemma2-9b-it",
-            "mixtral-8x7b-32768"
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "qwen/qwen3.6-27b"
         )
         for (fb in fallbacks) {
             if (fb !in modelsToTry) modelsToTry.add(fb)
@@ -109,7 +107,7 @@ class DocumentRepository(private val context: Context) {
         }
 
         throw Exception("Groq failed:\n${errors.joinToString("\n")}")
-        }
+            }
 
     private fun callOpenRouterVision(prompt: String, base64Image: String): String {
         val cleanModel = settings.openrouterModel.trim().removeSuffix(":free").trim()
