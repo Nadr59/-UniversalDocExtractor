@@ -3,15 +3,6 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-fun localProp(key: String, default: String = ""): String {
-    val f = rootProject.file("local.properties")
-    if (!f.exists()) return default
-    return f.readLines()
-        .map { it.split("=", limit = 2) }
-        .firstOrNull { it.size == 2 && it[0].trim() == key }
-        ?.get(1)?.trim() ?: default
-}
-
 android {
     namespace = "com.example.certextractor"
     compileSdk = 35
@@ -22,15 +13,10 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "2.0"
-
-        buildConfigField("String", "GROQ_API_KEY", "\"${localProp("GROQ_API_KEY")}\"")
-        buildConfigField("String", "GROQ_MODEL", "\"${localProp("GROQ_MODEL", "llama-3.2-11b-vision-preview")}\"")
-        buildConfigField("String", "GROQ_BASE_URL", "\"https://api.groq.com/\"")
     }
 
     buildFeatures {
         compose = true
-        buildConfig = true
     }
 
     composeOptions {
@@ -55,9 +41,6 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.8.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
-    implementation("com.squareup.retrofit2:retrofit:2.9.0")
-    implementation("com.squareup.retrofit2:converter-gson:2.9.0")
-    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("com.google.code.gson:gson:2.10.1")
     implementation("io.coil-kt:coil-compose:2.5.0")
