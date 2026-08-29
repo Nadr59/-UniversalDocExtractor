@@ -16,13 +16,16 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.CloudUpload
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.List
@@ -52,12 +55,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.certextractor.data.model.ExtractionField
 import com.example.certextractor.data.model.ExtractionResult
 import com.example.certextractor.ui.theme.ErrorRed
 import com.example.certextractor.ui.theme.SuccessGreen
+
+// ═══════════════════════════════════════
+// File Selection
+// ═══════════════════════════════════════
 
 @Composable
 fun FileSelectionCard(
@@ -83,7 +93,10 @@ fun FileSelectionCard(
                     tint = MaterialTheme.colorScheme.primary
                 )
                 Spacer(modifier = Modifier.height(12.dp))
-                Text("Select images or documents", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Select images or documents",
+                    style = MaterialTheme.typography.titleMedium
+                )
                 Text(
                     "JPG - PNG - WEBP",
                     style = MaterialTheme.typography.bodySmall,
@@ -91,18 +104,21 @@ fun FileSelectionCard(
                 )
             } else {
                 Icon(
-                    Icons.Default.CheckCircle,
+                    Icons.Filled.CheckCircle,
                     contentDescription = null,
                     modifier = Modifier.size(40.dp),
                     tint = SuccessGreen
                 )
                 Spacer(modifier = Modifier.height(8.dp))
-                Text("$selectedCount files selected", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "$selectedCount files selected",
+                    style = MaterialTheme.typography.titleMedium
+                )
             }
             Spacer(modifier = Modifier.height(16.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = onSelectFiles) {
-                    Icon(Icons.Default.Add, contentDescription = null)
+                    Icon(Icons.Filled.Add, contentDescription = null)
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(if (selectedCount == 0) "Select Files" else "Add More")
                 }
@@ -115,6 +131,10 @@ fun FileSelectionCard(
         }
     }
 }
+
+// ═══════════════════════════════════════
+// Image Preview
+// ═══════════════════════════════════════
 
 @Composable
 fun ImagePreviewRow(uris: List<Uri>) {
@@ -160,6 +180,10 @@ fun ImagePreviewRow(uris: List<Uri>) {
     }
 }
 
+// ═══════════════════════════════════════
+// Extraction Mode Toggle
+// ═══════════════════════════════════════
+
 @Composable
 fun ExtractionModeToggle(
     mode: ExtractionMode,
@@ -172,7 +196,7 @@ fun ExtractionModeToggle(
             label = { Text("Defined Fields") },
             leadingIcon = {
                 if (mode == ExtractionMode.FIELDS) {
-                    Icon(Icons.Default.Check, null, Modifier.size(18.dp))
+                    Icon(Icons.Filled.Check, null, Modifier.size(18.dp))
                 } else {
                     Icon(Icons.Outlined.List, null, Modifier.size(18.dp))
                 }
@@ -185,7 +209,7 @@ fun ExtractionModeToggle(
             label = { Text("Free Text") },
             leadingIcon = {
                 if (mode == ExtractionMode.FREE_TEXT) {
-                    Icon(Icons.Default.Check, null, Modifier.size(18.dp))
+                    Icon(Icons.Filled.Check, null, Modifier.size(18.dp))
                 } else {
                     Icon(Icons.Outlined.Edit, null, Modifier.size(18.dp))
                 }
@@ -194,6 +218,10 @@ fun ExtractionModeToggle(
         )
     }
 }
+
+// ═══════════════════════════════════════
+// Fields Section
+// ═══════════════════════════════════════
 
 @Composable
 fun FieldsSection(
@@ -246,7 +274,7 @@ fun FieldsSection(
                     }
                     IconButton(onClick = { onEdit(field) }) {
                         Icon(
-                            Icons.Default.Edit,
+                            Icons.Filled.Edit,
                             contentDescription = "Edit",
                             modifier = Modifier.size(20.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
@@ -254,7 +282,7 @@ fun FieldsSection(
                     }
                     IconButton(onClick = { onRemove(field.id) }) {
                         Icon(
-                            Icons.Default.Delete,
+                            Icons.Filled.Delete,
                             contentDescription = "Delete",
                             modifier = Modifier.size(20.dp),
                             tint = ErrorRed
@@ -271,13 +299,17 @@ fun FieldsSection(
 
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedButton(onClick = onAdd, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Default.Add, contentDescription = null)
+                Icon(Icons.Filled.Add, contentDescription = null)
                 Spacer(modifier = Modifier.width(4.dp))
                 Text("Add New Field")
             }
         }
     }
 }
+
+// ═══════════════════════════════════════
+// Free Text Section
+// ═══════════════════════════════════════
 
 @Composable
 fun FreeTextSection(
@@ -311,6 +343,10 @@ fun FreeTextSection(
     }
 }
 
+// ═══════════════════════════════════════
+// Process Button
+// ═══════════════════════════════════════
+
 @Composable
 fun ProcessButton(
     isProcessing: Boolean,
@@ -332,7 +368,7 @@ fun ProcessButton(
             Spacer(modifier = Modifier.width(10.dp))
             Text("Processing...", style = MaterialTheme.typography.labelLarge)
         } else {
-            Icon(Icons.Default.PlayArrow, contentDescription = null)
+            Icon(Icons.Filled.PlayArrow, contentDescription = null)
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 "Extract Data (" + fileCount.toString() + " files)",
@@ -341,6 +377,10 @@ fun ProcessButton(
         }
     }
 }
+
+// ═══════════════════════════════════════
+// Status Card
+// ═══════════════════════════════════════
 
 @Composable
 fun StatusCard(
@@ -380,6 +420,10 @@ fun StatusCard(
     }
 }
 
+// ═══════════════════════════════════════
+// Results Header
+// ═══════════════════════════════════════
+
 @Composable
 fun ResultsHeader(
     totalCount: Int,
@@ -400,12 +444,16 @@ fun ResultsHeader(
             )
         }
         FilledTonalButton(onClick = onExport) {
-            Icon(Icons.Default.Share, contentDescription = null)
+            Icon(Icons.Filled.Search, contentDescription = null)
             Spacer(modifier = Modifier.width(4.dp))
             Text("Export CSV")
         }
     }
 }
+
+// ═══════════════════════════════════════
+// Result Card
+// ═══════════════════════════════════════
 
 @Composable
 fun ResultCard(result: ExtractionResult) {
@@ -424,7 +472,7 @@ fun ResultCard(result: ExtractionResult) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    imageVector = if (isSuccess) Icons.Default.CheckCircle else Icons.Default.Cancel,
+                    imageVector = if (isSuccess) Icons.Filled.CheckCircle else Icons.Filled.Cancel,
                     contentDescription = null,
                     tint = if (isSuccess) SuccessGreen else ErrorRed,
                     modifier = Modifier.size(22.dp)
@@ -469,6 +517,10 @@ fun ResultCard(result: ExtractionResult) {
         }
     }
 }
+
+// ═══════════════════════════════════════
+// Field Dialog
+// ═══════════════════════════════════════
 
 @Composable
 fun FieldDialog(
@@ -521,6 +573,11 @@ fun FieldDialog(
         }
     )
 }
+
+// ═══════════════════════════════════════
+// Setup Prompt Card (no API key)
+// ═══════════════════════════════════════
+
 @Composable
 fun SetupPromptCard(onSetup: () -> Unit) {
     Card(
@@ -531,9 +588,16 @@ fun SetupPromptCard(onSetup: () -> Unit) {
         shape = RoundedCornerShape(12.dp)
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(16.dp).fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            Icon(
+                Icons.Filled.Warning,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.size(40.dp)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
             Text(
                 "API Key Required",
                 style = MaterialTheme.typography.titleMedium,
@@ -547,13 +611,17 @@ fun SetupPromptCard(onSetup: () -> Unit) {
             )
             Spacer(modifier = Modifier.height(12.dp))
             Button(onClick = onSetup) {
-                Icon(Icons.Default.Settings, contentDescription = null)
+                Icon(Icons.Filled.Build, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text("Open Settings")
             }
         }
     }
 }
+
+// ═══════════════════════════════════════
+// Active Provider Card
+// ═══════════════════════════════════════
 
 @Composable
 fun ActiveProviderCard(provider: String, model: String) {
@@ -579,7 +647,7 @@ fun ActiveProviderCard(provider: String, model: String) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                Icons.Default.CheckCircle,
+                Icons.Filled.CheckCircle,
                 contentDescription = null,
                 tint = SuccessGreen,
                 modifier = Modifier.size(20.dp)
@@ -592,4 +660,41 @@ fun ActiveProviderCard(provider: String, model: String) {
             )
         }
     }
+}
+
+// ═══════════════════════════════════════
+// Shared Components for Settings
+// ═══════════════════════════════════════
+
+@Composable
+fun InfoCard(text: String) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+        ),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Text(text, Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+fun KeyField(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    showKey: Boolean,
+    placeholder: String
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = Modifier.fillMaxWidth(),
+        label = { Text(label) },
+        placeholder = { Text(placeholder) },
+        singleLine = true,
+        visualTransformation = if (showKey) VisualTransformation.None
+        else PasswordVisualTransformation(),
+        shape = RoundedCornerShape(12.dp)
+    )
 }
