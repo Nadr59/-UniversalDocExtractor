@@ -4,6 +4,7 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.certextractor.data.local.AiSettings
 import com.example.certextractor.data.model.ExtractionField
 import com.example.certextractor.data.model.ExtractionResult
 import com.example.certextractor.data.repository.DocumentRepository
@@ -32,7 +33,8 @@ data class DocumentUiState(
     val extractionMode: ExtractionMode = ExtractionMode.FIELDS,
     val freeTextPrompt: String = "",
     val showAddFieldDialog: Boolean = false,
-    val editingField: ExtractionField? = null
+    val editingField: ExtractionField? = null,
+    val showSettings: Boolean = false
 )
 
 class DocumentViewModel(application: Application) : AndroidViewModel(application) {
@@ -40,6 +42,8 @@ class DocumentViewModel(application: Application) : AndroidViewModel(application
     private val repository = DocumentRepository(application)
     private val _uiState = MutableStateFlow(DocumentUiState())
     val uiState: StateFlow<DocumentUiState> = _uiState.asStateFlow()
+
+    fun getAiSettings(): AiSettings = repository.settings
 
     fun setDocuments(uris: List<Uri>) {
         _uiState.update { it.copy(selectedUris = uris) }
@@ -63,6 +67,14 @@ class DocumentViewModel(application: Application) : AndroidViewModel(application
 
     fun setFreeTextPrompt(prompt: String) {
         _uiState.update { it.copy(freeTextPrompt = prompt) }
+    }
+
+    fun showSettings() {
+        _uiState.update { it.copy(showSettings = true) }
+    }
+
+    fun hideSettings() {
+        _uiState.update { it.copy(showSettings = false) }
     }
 
     fun addField(name: String, description: String) {
@@ -123,6 +135,11 @@ class DocumentViewModel(application: Application) : AndroidViewModel(application
 
     fun processDocuments() {
         val state = _uiState.value
+
+        if (!repository.settings.isConfigured()) {
+            _uiState.update { it.copy(showSettings = true, message = "Configure API key first") }
+            return
+        }
 
         if (state.selectedUris.isEmpty()) {
             _uiState.update { it.copy(message = "Select files first") }
