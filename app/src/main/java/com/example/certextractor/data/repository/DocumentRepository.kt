@@ -10,7 +10,6 @@ import com.example.certextractor.data.model.ExtractionField
 import com.example.certextractor.data.model.ExtractionResult
 import com.example.certextractor.utils.DynamicPromptBuilder
 import com.google.gson.Gson
-import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -26,6 +25,10 @@ class DocumentRepository(private val context: Context) {
 
     val settings = AiSettings(context)
     private val gson = Gson()
+
+    // ═══════════════════════════════════════
+    // Public API
+    // ═══════════════════════════════════════
 
     suspend fun processDocument(
         uri: Uri,
@@ -64,58 +67,148 @@ class DocumentRepository(private val context: Context) {
         }
     }
 
+    suspend fun processBatch(
+        uris: List<Uri>,
+        fields: List<ExtractionField>,
+        freeTextPrompt: String?,
+        isFreeTextMode: Boolean,
+        onProgress: (current: Int, total: Int, result: ExtractionResult) -> Unit
+    ): List<ExtractionResult> {
+        val results = mutableListOf<ExtractionResult>()
+
+        uris.forEachIndexed { index, uri ->
+            val fileName = "document_" + (index + 1)
+            val result = processDocument(uri, fileName, fields, freeTextPrompt, isFreeTextMode)
+            results.add(result)
+            onProgress(index + 1, uris.size, result)
+            if (index < uris.lastIndex) delay(2500)
+        }
+
+        return results
+    }
+
+    // ═══════════════════════════════════════
+    // Router: dispatch to correct provider
+    // ═══════════════════════════════════════
+
     private fun callVisionApi(prompt: String, base64Image: String): String {
         return when (settings.provider) {
-            "groq" -> callGroqVision(prompt, base64Image)
+            "gemini" -> callGeminiVision(prompt, base64Image)
             "openrouter" -> callOpenRouterVision(prompt, base64Image)
             "openai" -> callOpenAIVision(prompt, base64Image)
-            "gemini" -> callGeminiVision(prompt, base64Image)
+            "groq" -> callGroqVision(prompt, base64Image)
             "mistral" -> callMistralVision(prompt, base64Image)
             "custom" -> callCustomVision(prompt, base64Image)
             else -> throw Exception("Unknown provider: ${settings.provider}")
         }
     }
 
-            private fun callGroqVision(prompt: String, base64Image: String): String {
-        val modelsToTry = mutableListOf(settings.groqModel.trim())
-        val fallbacks = listOf(
-            "openai/gpt-oss-120b",
-            "openai/gpt-oss-20b",
-            "qwen/qwen3.6-27b"
-        )
-        for (fb in fallbacks) {
-            if (fb !in modelsToTry) modelsToTry.add(fb)
-        }
+    // ═══════════════════════════════════════
+    // Gemini (native API — no OpenAI format)
+    // ═══════════════════════════════════════
+
+    private fun callGeminiVision(prompt: String, base64Image: String): String {
+        val apiKey = settings.geminiKey.trim()
+        if (apiKey.isBlank()) throw Exception("Gemini API key is empty")
+
+        val modelsToTry = listOf(
+            settings.geminiModel.trim(),
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-pro"
+        ).filter { it.isNotBlank() }.distinct()
 
         val errors = mutableListOf<String>()
 
         for (model in modelsToTry) {
-            if (model.isBlank()) continue
             try {
-                val result = callOpenAICompatibleVisionSingle(
-                    url = "https://api.groq.com/openai/v1/chat/completions",
-                    apiKey = settings.groqKey.trim(),
-                    model = model,
-                    prompt = prompt,
-                    base64Image = base64Image,
-                    extraHeaders = emptyMap()
+                val url = URL(
+                    "https://generativelanguage.googleapis.com/v1beta/models/" +
+                    "$model:generateContent?key=$apiKey"
                 )
-                if (result.isNotBlank()) return result
+                val conn = url.openConnection() as HttpURLConnection
+                conn.apply {
+                    requestMethod = "POST"
+                    setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                    connectTimeout = 60000
+                    readTimeout = 60000
+                    doOutput = true
+                }
+
+                val body = JSONObject().apply {
+                    put("contents", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("role", "user")
+                            put("parts", JSONArray().apply {
+                                put(JSONObject().apply {
+                                    put("text", prompt)
+                                })
+                                put(JSONObject().apply {
+                                    put("inline_data", JSONObject().apply {
+                                        put("mime_type", "image/jpeg")
+                                        put("data", base64Image)
+                                    })
+                                })
+                            })
+                        })
+                    })
+                    put("generationConfig", JSONObject().apply {
+                        put("temperature", 0.1)
+                        put("maxOutputTokens", 1024)
+                        put("responseMimeType", "application/json")
+                    })
+                }
+
+                OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use {
+                    it.write(body.toString())
+                    it.flush()
+                }
+
+                if (conn.responseCode != 200) {
+                    val msg = getErrorMessage(conn)
+                    conn.disconnect()
+                    errors.add("$model: $msg")
+                    continue
+                }
+
+                val response = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+
+                val json = JSONObject(response)
+                val candidates = json.optJSONArray("candidates")
+                if (candidates != null && candidates.length() > 0) {
+                    val parts = candidates.getJSONObject(0)
+                        .optJSONObject("content")
+                        ?.optJSONArray("parts")
+                    if (parts != null && parts.length() > 0) {
+                        return parts.getJSONObject(0).getString("text").trim()
+                    }
+                }
+                errors.add("$model: Empty response")
             } catch (e: Exception) {
                 errors.add("$model: ${e.message?.take(150)}")
             }
         }
 
-        throw Exception("Groq failed:\n${errors.joinToString("\n")}")
-            }
+        throw Exception("Gemini failed:\n${errors.joinToString("\n")}")
+    }
+
+    // ═══════════════════════════════════════
+    // OpenRouter
+    // ═══════════════════════════════════════
 
     private fun callOpenRouterVision(prompt: String, base64Image: String): String {
+        val apiKey = settings.openrouterKey.trim()
+        if (apiKey.isBlank()) throw Exception("OpenRouter API key is empty")
+
         val cleanModel = settings.openrouterModel.trim().removeSuffix(":free").trim()
-        val modelsToTry = mutableListOf(cleanModel)
+        val modelsToTry = mutableListOf<String>()
+        if (cleanModel.isNotBlank()) modelsToTry.add(cleanModel)
+
         val fallbacks = listOf(
+            "google/gemini-2.5-flash-preview:free",
             "google/gemini-2.0-flash-exp:free",
-            "meta-llama/llama-3.2-11b-vision-instruct",
-            "mistralai/pixtral-12b"
+            "qwen/qwen-2.5-vl-72b-instruct:free"
         )
         for (fb in fallbacks) {
             if (fb !in modelsToTry) modelsToTry.add(fb)
@@ -123,7 +216,7 @@ class DocumentRepository(private val context: Context) {
 
         return callOpenAICompatibleVision(
             url = "https://openrouter.ai/api/v1/chat/completions",
-            apiKey = settings.openrouterKey.trim(),
+            apiKey = apiKey,
             models = modelsToTry,
             prompt = prompt,
             base64Image = base64Image,
@@ -134,10 +227,17 @@ class DocumentRepository(private val context: Context) {
         )
     }
 
+    // ═══════════════════════════════════════
+    // OpenAI
+    // ═══════════════════════════════════════
+
     private fun callOpenAIVision(prompt: String, base64Image: String): String {
+        val apiKey = settings.openaiKey.trim()
+        if (apiKey.isBlank()) throw Exception("OpenAI API key is empty")
+
         return callOpenAICompatibleVision(
             url = "https://api.openai.com/v1/chat/completions",
-            apiKey = settings.openaiKey.trim(),
+            apiKey = apiKey,
             models = listOf(settings.openaiModel.trim(), "gpt-4o-mini", "gpt-4o"),
             prompt = prompt,
             base64Image = base64Image,
@@ -145,10 +245,47 @@ class DocumentRepository(private val context: Context) {
         )
     }
 
+    // ═══════════════════════════════════════
+    // Groq
+    // ═══════════════════════════════════════
+
+    private fun callGroqVision(prompt: String, base64Image: String): String {
+        val apiKey = settings.groqKey.trim()
+        if (apiKey.isBlank()) throw Exception("Groq API key is empty")
+
+        val modelsToTry = mutableListOf<String>()
+        val chosen = settings.groqModel.trim()
+        if (chosen.isNotBlank()) modelsToTry.add(chosen)
+
+        val fallbacks = listOf(
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant"
+        )
+        for (fb in fallbacks) {
+            if (fb !in modelsToTry) modelsToTry.add(fb)
+        }
+
+        return callOpenAICompatibleVision(
+            url = "https://api.groq.com/openai/v1/chat/completions",
+            apiKey = apiKey,
+            models = modelsToTry,
+            prompt = prompt,
+            base64Image = base64Image,
+            extraHeaders = emptyMap()
+        )
+    }
+
+    // ═══════════════════════════════════════
+    // Mistral
+    // ═══════════════════════════════════════
+
     private fun callMistralVision(prompt: String, base64Image: String): String {
+        val apiKey = settings.mistralKey.trim()
+        if (apiKey.isBlank()) throw Exception("Mistral API key is empty")
+
         return callOpenAICompatibleVision(
             url = "https://api.mistral.ai/v1/chat/completions",
-            apiKey = settings.mistralKey.trim(),
+            apiKey = apiKey,
             models = listOf(settings.mistralModel.trim(), "pixtral-12b-2409"),
             prompt = prompt,
             base64Image = base64Image,
@@ -156,17 +293,30 @@ class DocumentRepository(private val context: Context) {
         )
     }
 
+    // ═══════════════════════════════════════
+    // Custom
+    // ═══════════════════════════════════════
+
     private fun callCustomVision(prompt: String, base64Image: String): String {
         val baseUrl = settings.customUrl.trim().trimEnd('/')
+        val apiKey = settings.customKey.trim()
+        if (baseUrl.isBlank()) throw Exception("Custom server URL is empty")
+        if (apiKey.isBlank()) throw Exception("Custom API key is empty")
+
         return callOpenAICompatibleVision(
             url = "$baseUrl/v1/chat/completions",
-            apiKey = settings.customKey.trim(),
+            apiKey = apiKey,
             models = listOf(settings.customModel.trim()),
             prompt = prompt,
             base64Image = base64Image,
             extraHeaders = emptyMap()
         )
     }
+
+    // ═══════════════════════════════════════
+    // Unified OpenAI-compatible caller
+    // (with fallback across models)
+    // ═══════════════════════════════════════
 
     private fun callOpenAICompatibleVision(
         url: String,
@@ -236,9 +386,6 @@ class DocumentRepository(private val context: Context) {
             })
             put("temperature", 0.1)
             put("max_tokens", 1024)
-            put("response_format", JSONObject().apply {
-                put("type", "json_object")
-            })
         }
 
         OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use {
@@ -266,106 +413,9 @@ class DocumentRepository(private val context: Context) {
         throw Exception("Empty response")
     }
 
-    private fun callGeminiVision(prompt: String, base64Image: String): String {
-        val apiKey = settings.geminiKey.trim()
-        if (apiKey.isBlank()) throw Exception("Gemini API key is empty")
-
-        val modelsToTry = listOf(
-            settings.geminiModel.trim(),
-            "gemini-2.5-flash",
-            "gemini-2.5-flash-lite",
-            "gemini-2.5-pro",
-            "gemini-3.6-flash",
-            "gemini-3.7-flash"
-        ).filter { it.isNotBlank() }.distinct()
-
-        val errors = mutableListOf<String>()
-
-        for (model in modelsToTry) {
-            try {
-                val url = URL(
-                    "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey"
-                )
-                val conn = url.openConnection() as HttpURLConnection
-                conn.apply {
-                    requestMethod = "POST"
-                    setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                    connectTimeout = 60000
-                    readTimeout = 60000
-                    doOutput = true
-                }
-
-                val body = JSONObject().apply {
-                    put("contents", JSONArray().apply {
-                        put(JSONObject().apply {
-                            put("role", "user")
-                            put("parts", JSONArray().apply {
-                                put(JSONObject().apply { put("text", prompt) })
-                                put(JSONObject().apply {
-                                    put("inline_data", JSONObject().apply {
-                                        put("mime_type", "image/jpeg")
-                                        put("data", base64Image)
-                                    })
-                                })
-                            })
-                        })
-                    })
-                    put("generationConfig", JSONObject().apply {
-                        put("temperature", 0.1)
-                        put("maxOutputTokens", 1024)
-                        put("responseMimeType", "application/json")
-                    })
-                }
-
-                OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use {
-                    it.write(body.toString())
-                    it.flush()
-                }
-
-                if (conn.responseCode != 200) {
-                    val msg = getErrorMessage(conn)
-                    conn.disconnect()
-                    errors.add("$model: $msg")
-                    continue
-                }
-
-                val response = conn.inputStream.bufferedReader().readText()
-                conn.disconnect()
-
-                val json = JSONObject(response)
-                val candidates = json.optJSONArray("candidates")
-                if (candidates != null && candidates.length() > 0) {
-                    val parts = candidates.getJSONObject(0)
-                        .optJSONObject("content")
-                        ?.optJSONArray("parts")
-                    if (parts != null && parts.length() > 0) {
-                        return parts.getJSONObject(0).getString("text").trim()
-                    }
-                }
-                errors.add("$model: Empty response")
-            } catch (e: Exception) {
-                errors.add("$model: ${e.message?.take(150)}")
-            }
-        }
-
-        throw Exception("Gemini failed:\n${errors.joinToString("\n")}")
-    }
-
-    private fun getErrorMessage(conn: HttpURLConnection): String {
-        return try {
-            val errorStream = conn.errorStream
-            if (errorStream != null) {
-                val errorText = errorStream.bufferedReader().readText()
-                val json = JSONObject(errorText)
-                json.optJSONObject("error")?.optString("message")
-                    ?: errorText.take(300)
-            } else {
-                "HTTP ${conn.responseCode}: ${conn.responseMessage}"
-            }
-        } catch (_: Exception) {
-            "HTTP ${conn.responseCode}: ${conn.responseMessage}"
-        }
-    }
+    // ═══════════════════════════════════════
+    // Image handling
+    // ═══════════════════════════════════════
 
     private fun uriToBase64(uri: Uri): String {
         val inputStream = context.contentResolver.openInputStream(uri)
@@ -377,7 +427,11 @@ class DocumentRepository(private val context: Context) {
         BitmapFactory.decodeStream(inputStream, null, boundsOptions)
         inputStream.close()
 
-        val sampleSize = calculateSampleSize(boundsOptions.outWidth, boundsOptions.outHeight, 2048)
+        val sampleSize = calculateSampleSize(
+            boundsOptions.outWidth,
+            boundsOptions.outHeight,
+            2048
+        )
         val decodeOptions = BitmapFactory.Options().apply {
             inSampleSize = sampleSize
         }
@@ -404,11 +458,15 @@ class DocumentRepository(private val context: Context) {
         return sampleSize
     }
 
-        private fun parseResponse(content: String, fileName: String): ExtractionResult {
+    // ═══════════════════════════════════════
+    // JSON response parsing
+    // ═══════════════════════════════════════
+
+    private fun parseResponse(content: String, fileName: String): ExtractionResult {
         val cleaned = extractJson(content)
 
         return try {
-            val json = gson.fromJson(cleaned, com.google.gson.JsonObject::class.java)
+            val json = gson.fromJson(cleaned, JsonObject::class.java)
             val values = mutableMapOf<String, String>()
 
             json.entrySet().forEach { entry ->
@@ -440,18 +498,29 @@ class DocumentRepository(private val context: Context) {
         }
     }
 
+    /**
+     * Extract clean JSON from any response format:
+     * - Plain JSON: {"key": "value"}
+     * - Markdown: ```json\n{"key": "value"}\n```
+     * - Text with JSON embedded
+     * - JSON wrapped in extra text
+     */
     private fun extractJson(raw: String): String {
         var text = raw.trim()
 
-        // Remove markdown code blocks: ```json ... ``` or ``` ... ```
+        // 1. Remove markdown code blocks: ```json ... ``` or ``` ... ```
         if (text.contains("```")) {
             val start = text.indexOf("```")
             var afterStart = start + 3
-            // skip language tag like "json" after ```
+
+            // Skip language tag after ```
             if (afterStart < text.length && text[afterStart] != '\n') {
                 val newline = text.indexOf('\n', afterStart)
-                if (newline != -1) afterStart = newline + 1
+                if (newline != -1) {
+                    afterStart = newline + 1
+                }
             }
+
             val end = text.indexOf("```", afterStart)
             if (end != -1) {
                 text = text.substring(afterStart, end).trim()
@@ -460,7 +529,7 @@ class DocumentRepository(private val context: Context) {
             }
         }
 
-        // Try to find JSON object boundaries { ... }
+        // 2. Try to find JSON object boundaries { ... }
         val firstBrace = text.indexOf('{')
         val lastBrace = text.lastIndexOf('}')
 
@@ -468,5 +537,36 @@ class DocumentRepository(private val context: Context) {
             text = text.substring(firstBrace, lastBrace + 1)
         }
 
+        // 3. Try to find JSON array if no object found [ ... ]
+        if (!text.startsWith("{")) {
+            val firstBracket = text.indexOf('[')
+            val lastBracket = text.lastIndexOf(']')
+
+            if (firstBracket != -1 && lastBracket != -1 && lastBracket > firstBracket) {
+                text = text.substring(firstBracket, lastBracket + 1)
+            }
+        }
+
         return text
     }
+
+    // ═══════════════════════════════════════
+    // HTTP error helper
+    // ═══════════════════════════════════════
+
+    private fun getErrorMessage(conn: HttpURLConnection): String {
+        return try {
+            val errorStream = conn.errorStream
+            if (errorStream != null) {
+                val errorText = errorStream.bufferedReader().readText()
+                val json = JSONObject(errorText)
+                json.optJSONObject("error")?.optString("message")
+                    ?: errorText.take(300)
+            } else {
+                "HTTP " + conn.responseCode + ": " + conn.responseMessage
+            }
+        } catch (_: Exception) {
+            "HTTP " + conn.responseCode + ": " + conn.responseMessage
+        }
+    }
+}
