@@ -15,7 +15,7 @@ class AiSettings(context: Context) {
         set(value) = prefs.edit().putString("groq_key", value).apply()
 
     var groqModel: String
-        get() = prefs.getString("groq_model", "openai/gpt-oss-120b") ?: "openai/gpt-oss-120b"
+        get() = prefs.getString("groq_model", "") ?: ""
         set(value) = prefs.edit().putString("groq_model", value).apply()
 
     var openrouterKey: String
