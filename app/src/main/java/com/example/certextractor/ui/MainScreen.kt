@@ -11,7 +11,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -34,6 +38,14 @@ import java.util.Locale
 fun MainScreen(viewModel: DocumentViewModel = viewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+
+    if (uiState.showSettings) {
+        SettingsScreen(
+            settings = viewModel.getAiSettings(),
+            onBack = { viewModel.hideSettings() }
+        )
+        return
+    }
 
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
@@ -65,14 +77,21 @@ fun MainScreen(viewModel: DocumentViewModel = viewModel()) {
         }
     }
 
+    val settings = viewModel.getAiSettings()
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
                     Text(
-                        "Universal Document Extractor",
+                        "Document Extractor",
                         style = MaterialTheme.typography.titleLarge
                     )
+                },
+                actions = {
+                    IconButton(onClick = { viewModel.showSettings() }) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface
@@ -88,6 +107,19 @@ fun MainScreen(viewModel: DocumentViewModel = viewModel()) {
             verticalArrangement = Arrangement.spacedBy(16.dp),
             contentPadding = PaddingValues(vertical = 16.dp)
         ) {
+
+            if (!settings.isConfigured()) {
+                item {
+                    SetupPromptCard(onSetup = { viewModel.showSettings() })
+                }
+            } else {
+                item {
+                    ActiveProviderCard(
+                        provider = settings.provider,
+                        model = settings.getActiveModel()
+                    )
+                }
+            }
 
             item {
                 FileSelectionCard(
@@ -154,10 +186,7 @@ fun MainScreen(viewModel: DocumentViewModel = viewModel()) {
                         totalCount = uiState.results.size,
                         successCount = uiState.results.count { it.status == "success" },
                         onExport = {
-                            val ts = SimpleDateFormat(
-                                "yyyyMMdd_HHmmss",
-                                Locale.getDefault()
-                            ).format(Date())
+                            val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
                             csvSaver.launch("extracted_$ts.csv")
                         }
                     )
@@ -168,9 +197,7 @@ fun MainScreen(viewModel: DocumentViewModel = viewModel()) {
                 }
             }
 
-            item {
-                Spacer(modifier = Modifier.height(32.dp))
-            }
+            item { Spacer(modifier = Modifier.height(32.dp)) }
         }
     }
 
