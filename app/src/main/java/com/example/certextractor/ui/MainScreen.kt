@@ -12,7 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -90,7 +90,7 @@ fun MainScreen(viewModel: DocumentViewModel = viewModel()) {
                 },
                 actions = {
                     IconButton(onClick = { viewModel.showSettings() }) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        Icon(Icons.Filled.Tune, contentDescription = "Settings")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -186,7 +186,10 @@ fun MainScreen(viewModel: DocumentViewModel = viewModel()) {
                         totalCount = uiState.results.size,
                         successCount = uiState.results.count { it.status == "success" },
                         onExport = {
-                            val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+                            val ts = SimpleDateFormat(
+                                "yyyyMMdd_HHmmss",
+                                Locale.getDefault()
+                            ).format(Date())
                             csvSaver.launch("extracted_$ts.csv")
                         }
                     )
