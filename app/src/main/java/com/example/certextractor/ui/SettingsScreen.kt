@@ -43,8 +43,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.certextractor.data.local.AiSettings
 
@@ -86,7 +84,7 @@ fun SettingsScreen(
                 title = { Text("AI Settings") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, "Back")
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
                     }
                 }
             )
@@ -138,7 +136,7 @@ fun SettingsScreen(
                 Spacer(Modifier.weight(1f))
                 TextButton(onClick = { showKeys = !showKeys }) {
                     Icon(
-                        if (showKeys) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                        if (showKeys) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
                         contentDescription = null
                     )
                     Spacer(Modifier.width(4.dp))
@@ -267,7 +265,7 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth().height(52.dp),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Icon(Icons.Default.Save, contentDescription = null)
+                Icon(Icons.Filled.Save, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text("Save Settings", fontWeight = FontWeight.Bold)
             }
@@ -280,7 +278,11 @@ fun SettingsScreen(
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.CheckCircle, null, tint = MaterialTheme.colorScheme.primary)
+                        Icon(
+                            Icons.Filled.CheckCircle,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
                         Spacer(Modifier.width(8.dp))
                         Text("Settings saved!", color = MaterialTheme.colorScheme.primary)
                     }
@@ -290,39 +292,6 @@ fun SettingsScreen(
             Spacer(Modifier.height(32.dp))
         }
     }
-}
-
-@Composable
-private fun InfoCard(text: String) {
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
-        ),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Text(text, Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
-    }
-}
-
-@Composable
-private fun KeyField(
-    label: String,
-    value: String,
-    onValueChange: (String) -> Unit,
-    showKey: Boolean,
-    placeholder: String
-) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        modifier = Modifier.fillMaxWidth(),
-        label = { Text(label) },
-        placeholder = { Text(placeholder) },
-        singleLine = true,
-        visualTransformation = if (showKey) VisualTransformation.None
-        else PasswordVisualTransformation(),
-        shape = RoundedCornerShape(12.dp)
-    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
