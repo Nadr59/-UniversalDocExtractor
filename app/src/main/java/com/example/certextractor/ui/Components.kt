@@ -428,25 +428,41 @@ fun StatusCard(
 fun ResultsHeader(
     totalCount: Int,
     successCount: Int,
-    onExport: () -> Unit
+    onExportCsv: () -> Unit,
+    onExportExcel: () -> Unit
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column {
-            Text("Results", style = MaterialTheme.typography.titleLarge)
-            Text(
-                successCount.toString() + " of " + totalCount.toString() + " succeeded",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text("Results", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    successCount.toString() + " of " + totalCount.toString() + " succeeded",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
-        FilledTonalButton(onClick = onExport) {
-            Icon(Icons.Filled.Search, contentDescription = null)
-            Spacer(modifier = Modifier.width(4.dp))
-            Text("Export CSV")
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedButton(
+                onClick = onExportCsv,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("CSV")
+            }
+            Button(
+                onClick = onExportExcel,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Excel")
+            }
         }
     }
 }
