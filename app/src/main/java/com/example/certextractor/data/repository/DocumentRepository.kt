@@ -76,26 +76,40 @@ class DocumentRepository(private val context: Context) {
         }
     }
 
-    private fun callGroqVision(prompt: String, base64Image: String): String {
+        private fun callGroqVision(prompt: String, base64Image: String): String {
         val modelsToTry = mutableListOf(settings.groqModel.trim())
         val fallbacks = listOf(
-            "llama-3.2-11b-vision-preview",
-            "llama-3.2-90b-vision-preview",
-            "meta-llama/llama-4-scout-17b-16e-instruct"
+            "llama-4-scout-17b-16e-instruct",
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+            "gemma2-9b-it",
+            "mixtral-8x7b-32768"
         )
         for (fb in fallbacks) {
             if (fb !in modelsToTry) modelsToTry.add(fb)
         }
 
-        return callOpenAICompatibleVision(
-            url = "https://api.groq.com/openai/v1/chat/completions",
-            apiKey = settings.groqKey.trim(),
-            models = modelsToTry,
-            prompt = prompt,
-            base64Image = base64Image,
-            extraHeaders = emptyMap()
-        )
-    }
+        val errors = mutableListOf<String>()
+
+        for (model in modelsToTry) {
+            if (model.isBlank()) continue
+            try {
+                val result = callOpenAICompatibleVisionSingle(
+                    url = "https://api.groq.com/openai/v1/chat/completions",
+                    apiKey = settings.groqKey.trim(),
+                    model = model,
+                    prompt = prompt,
+                    base64Image = base64Image,
+                    extraHeaders = emptyMap()
+                )
+                if (result.isNotBlank()) return result
+            } catch (e: Exception) {
+                errors.add("$model: ${e.message?.take(150)}")
+            }
+        }
+
+        throw Exception("Groq failed:\n${errors.joinToString("\n")}")
+        }
 
     private fun callOpenRouterVision(prompt: String, base64Image: String): String {
         val cleanModel = settings.openrouterModel.trim().removeSuffix(":free").trim()
