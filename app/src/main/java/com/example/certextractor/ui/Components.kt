@@ -521,3 +521,75 @@ fun FieldDialog(
         }
     )
 }
+@Composable
+fun SetupPromptCard(onSetup: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f)
+        ),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                "API Key Required",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "Configure your AI provider to start extracting",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.7f)
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Button(onClick = onSetup) {
+                Icon(Icons.Default.Settings, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Open Settings")
+            }
+        }
+    }
+}
+
+@Composable
+fun ActiveProviderCard(provider: String, model: String) {
+    val providerName = when (provider) {
+        "groq" -> "Groq"
+        "openrouter" -> "OpenRouter"
+        "openai" -> "OpenAI"
+        "gemini" -> "Gemini"
+        "mistral" -> "Mistral"
+        "custom" -> "Custom"
+        else -> provider
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+        ),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.CheckCircle,
+                contentDescription = null,
+                tint = SuccessGreen,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                "$providerName - $model",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+}
