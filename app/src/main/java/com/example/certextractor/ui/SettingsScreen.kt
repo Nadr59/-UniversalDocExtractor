@@ -70,10 +70,10 @@ fun SettingsScreen(
     var saved by remember { mutableStateOf(false) }
 
     val providers = listOf(
-        "groq" to "Groq (Free - Fastest)",
+        "gemini" to "Google Gemini (Free - Recommended)",
         "openrouter" to "OpenRouter",
+        "groq" to "Groq",
         "openai" to "OpenAI (ChatGPT)",
-        "gemini" to "Google Gemini",
         "mistral" to "Mistral AI",
         "custom" to "Custom (OpenAI Compatible)"
     )
@@ -145,30 +145,32 @@ fun SettingsScreen(
             }
 
             when (provider) {
-                                "groq" -> {
-                    InfoCard("Groq is completely free. Get key at console.groq.com/keys")
-                    KeyField("Groq API Key", groqKey, { groqKey = it; saved = false }, showKeys, "gsk_...")
+
+                "gemini" -> {
+                    InfoCard("Free tier available. Get key at aistudio.google.com/apikey. Best for image analysis.")
+                    KeyField("Gemini API Key", geminiKey, { geminiKey = it; saved = false }, showKeys, "AIza...")
                     VisionModelDropdown(
-                        label = "Model",
+                        label = "Vision Model",
                         models = listOf(
-                            "llama-4-scout-17b-16e-instruct" to "Llama 4 Scout 17B",
-                            "llama-3.3-70b-versatile" to "Llama 3.3 70B",
-                            "llama-3.1-8b-instant" to "Llama 3.1 8B (Fast)",
-                            "gemma2-9b-it" to "Gemma 2 9B",
-                            "mixtral-8x7b-32768" to "Mixtral 8x7B"
+                            "gemini-2.5-flash" to "Gemini 2.5 Flash (Recommended)",
+                            "gemini-2.0-flash" to "Gemini 2.0 Flash",
+                            "gemini-2.5-pro" to "Gemini 2.5 Pro",
+                            "gemini-1.5-flash" to "Gemini 1.5 Flash"
                         ),
-                        selected = groqModel,
-                        onSelect = { groqModel = it; saved = false }
+                        selected = geminiModel,
+                        onSelect = { geminiModel = it; saved = false }
                     )
-                                }
+                }
+
                 "openrouter" -> {
-                    InfoCard("Get key at openrouter.ai/keys. Add credits at openrouter.ai/credits")
+                    InfoCard("Get key at openrouter.ai/keys. Some models are free.")
                     KeyField("OpenRouter API Key", openrouterKey, { openrouterKey = it; saved = false }, showKeys, "sk-or-...")
                     VisionModelDropdown(
                         label = "Vision Model",
                         models = listOf(
+                            "google/gemini-2.5-flash-preview:free" to "Gemini 2.5 Flash (Free)",
                             "google/gemini-2.0-flash-exp:free" to "Gemini 2.0 Flash (Free)",
-                            "meta-llama/llama-3.2-11b-vision-instruct" to "Llama 3.2 11B Vision",
+                            "qwen/qwen-2.5-vl-72b-instruct:free" to "Qwen 2.5 VL 72B (Free)",
                             "mistralai/pixtral-12b" to "Pixtral 12B"
                         ),
                         selected = openrouterModel,
@@ -183,6 +185,41 @@ fun SettingsScreen(
                         shape = RoundedCornerShape(12.dp)
                     )
                 }
+
+                "groq" -> {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text(
+                                "Note: Groq no longer has free vision models.",
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            Text(
+                                "Vision support may not work. Consider Gemini (free) or OpenRouter instead.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.7f)
+                            )
+                        }
+                    }
+                    KeyField("Groq API Key", groqKey, { groqKey = it; saved = false }, showKeys, "gsk_...")
+                    VisionModelDropdown(
+                        label = "Model",
+                        models = listOf(
+                            "openai/gpt-oss-120b" to "GPT-OSS 120B",
+                            "openai/gpt-oss-20b" to "GPT-OSS 20B",
+                            "qwen/qwen3.6-27b" to "Qwen 3.6 27B"
+                        ),
+                        selected = groqModel,
+                        onSelect = { groqModel = it; saved = false }
+                    )
+                }
+
                 "openai" -> {
                     KeyField("OpenAI API Key", openaiKey, { openaiKey = it; saved = false }, showKeys, "sk-...")
                     VisionModelDropdown(
@@ -196,31 +233,20 @@ fun SettingsScreen(
                         onSelect = { openaiModel = it; saved = false }
                     )
                 }
-                "gemini" -> {
-                    InfoCard("Get key at aistudio.google.com/apikey")
-                    KeyField("Gemini API Key", geminiKey, { geminiKey = it; saved = false }, showKeys, "AIza...")
-                    VisionModelDropdown(
-                        label = "Vision Model",
-                        models = listOf(
-                            "gemini-2.0-flash" to "Gemini 2.0 Flash",
-                            "gemini-1.5-flash" to "Gemini 1.5 Flash",
-                            "gemini-1.5-pro" to "Gemini 1.5 Pro"
-                        ),
-                        selected = geminiModel,
-                        onSelect = { geminiModel = it; saved = false }
-                    )
-                }
+
                 "mistral" -> {
                     KeyField("Mistral API Key", mistralKey, { mistralKey = it; saved = false }, showKeys, "key...")
                     VisionModelDropdown(
                         label = "Vision Model",
                         models = listOf(
-                            "pixtral-12b-2409" to "Pixtral 12B"
+                            "pixtral-12b-2409" to "Pixtral 12B",
+                            "mistral-large-latest" to "Mistral Large"
                         ),
                         selected = mistralModel,
                         onSelect = { mistralModel = it; saved = false }
                     )
                 }
+
                 "custom" -> {
                     OutlinedTextField(
                         value = customUrl,
