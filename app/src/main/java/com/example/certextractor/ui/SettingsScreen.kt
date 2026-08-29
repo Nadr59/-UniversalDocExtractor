@@ -145,20 +145,22 @@ fun SettingsScreen(
             }
 
             when (provider) {
-                "groq" -> {
+                                "groq" -> {
                     InfoCard("Groq is completely free. Get key at console.groq.com/keys")
                     KeyField("Groq API Key", groqKey, { groqKey = it; saved = false }, showKeys, "gsk_...")
                     VisionModelDropdown(
-                        label = "Vision Model",
+                        label = "Model",
                         models = listOf(
-                            "llama-3.2-11b-vision-preview" to "Llama 3.2 11B Vision",
-                            "llama-3.2-90b-vision-preview" to "Llama 3.2 90B Vision",
-                            "meta-llama/llama-4-scout-17b-16e-instruct" to "Llama 4 Scout 17B"
+                            "llama-4-scout-17b-16e-instruct" to "Llama 4 Scout 17B",
+                            "llama-3.3-70b-versatile" to "Llama 3.3 70B",
+                            "llama-3.1-8b-instant" to "Llama 3.1 8B (Fast)",
+                            "gemma2-9b-it" to "Gemma 2 9B",
+                            "mixtral-8x7b-32768" to "Mixtral 8x7B"
                         ),
                         selected = groqModel,
                         onSelect = { groqModel = it; saved = false }
                     )
-                }
+                                }
                 "openrouter" -> {
                     InfoCard("Get key at openrouter.ai/keys. Add credits at openrouter.ai/credits")
                     KeyField("OpenRouter API Key", openrouterKey, { openrouterKey = it; saved = false }, showKeys, "sk-or-...")
