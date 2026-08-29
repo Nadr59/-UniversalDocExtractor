@@ -32,6 +32,7 @@ import com.example.certextractor.utils.CsvExporter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.example.certextractor.utils.ExcelExporter
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -76,6 +77,18 @@ fun MainScreen(viewModel: DocumentViewModel = viewModel()) {
             )
         }
     }
+        val excelSaver = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/vnd.ms-excel")
+    ) { uri: Uri? ->
+        uri?.let {
+            ExcelExporter.writeExcelToUri(
+                context = context,
+                uri = it,
+                results = uiState.results,
+                fields = uiState.fields
+            )
+        }
+        }
 
     val settings = viewModel.getAiSettings()
 
@@ -181,19 +194,26 @@ fun MainScreen(viewModel: DocumentViewModel = viewModel()) {
             }
 
             if (uiState.results.isNotEmpty()) {
-                item {
+                                item {
                     ResultsHeader(
                         totalCount = uiState.results.size,
                         successCount = uiState.results.count { it.status == "success" },
-                        onExport = {
+                        onExportCsv = {
                             val ts = SimpleDateFormat(
                                 "yyyyMMdd_HHmmss",
                                 Locale.getDefault()
                             ).format(Date())
                             csvSaver.launch("extracted_$ts.csv")
+                        },
+                        onExportExcel = {
+                            val ts = SimpleDateFormat(
+                                "yyyyMMdd_HHmmss",
+                                Locale.getDefault()
+                            ).format(Date())
+                            excelSaver.launch("extracted_$ts.xls")
                         }
                     )
-                }
+                                }
 
                 items(uiState.results) { result ->
                     ResultCard(result = result)
