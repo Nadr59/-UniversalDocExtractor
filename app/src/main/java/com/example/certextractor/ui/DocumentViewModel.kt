@@ -189,25 +189,20 @@ class DocumentViewModel(application: Application) : AndroidViewModel(application
         }
 
         try {
-
             repository.processBatch(
                 uris = state.selectedUris,
                 fields = state.fields,
                 freeTextPrompt = state.freeTextPrompt,
                 isFreeTextMode =
-                    state.extractionMode ==
-                            ExtractionMode.FREE_TEXT,
+                    state.extractionMode == ExtractionMode.FREE_TEXT,
 
                 onProgress = { current, total, result ->
 
                     _uiState.update { currentState ->
-
                         currentState.copy(
                             progress = current,
-                            results =
-                                currentState.results + result,
-                            message =
-                                "Processed $current of $total"
+                            results = currentState.results + result,
+                            message = "Processed $current of $total"
                         )
                     }
                 }
@@ -215,26 +210,24 @@ class DocumentViewModel(application: Application) : AndroidViewModel(application
 
             val finalResults = _uiState.value.results
 
-            val successCount =
-                finalResults.count {
-                    it.status == "success"
-                }
+            val successCount = finalResults.count {
+                it.status == "success"
+            }
 
-            val errorCount =
-                finalResults.count {
-                    it.status == "error"
-                }
+            val errorCount = finalResults.count {
+                it.status == "error"
+            }
 
             _uiState.update {
                 it.copy(
                     isProcessing = false,
                     message =
                         "Done! $successCount/$totalFiles succeeded" +
-                                if (errorCount > 0) {
-                                    " - $errorCount failed"
-                                } else {
-                                    ""
-                                }
+                            if (errorCount > 0) {
+                                " - $errorCount failed"
+                            } else {
+                                ""
+                            }
                 )
             }
 
@@ -245,14 +238,12 @@ class DocumentViewModel(application: Application) : AndroidViewModel(application
                     isProcessing = false,
                     message =
                         "Processing failed: " +
-                                (e.message
-                                    ?: "Unknown error")
-                )
-            }
-        }
+                            (e.message ?: "Unknown error")
+                  )
+              }
+          }
+       }
     }
-    }
-    
             
 
             
