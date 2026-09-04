@@ -135,61 +135,124 @@ class DocumentViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun processDocuments() {
-        val state = _uiState.value
+    val state = _uiState.value
 
-        if (!repository.settings.isConfigured()) {
-            _uiState.update { it.copy(showSettings = true, message = "Configure API key first") }
-            return
+    if (!repository.settings.isConfigured()) {
+        _uiState.update {
+            it.copy(
+                showSettings = true,
+                message = "Configure API key first"
+            )
+        }
+        return
+    }
+
+    if (state.selectedUris.isEmpty()) {
+        _uiState.update {
+            it.copy(message = "Select files first")
+        }
+        return
+    }
+
+    if (
+        state.extractionMode == ExtractionMode.FIELDS &&
+        state.fields.none { it.enabled }
+    ) {
+        _uiState.update {
+            it.copy(message = "Enable at least one field")
+        }
+        return
+    }
+
+    if (
+        state.extractionMode == ExtractionMode.FREE_TEXT &&
+        state.freeTextPrompt.isBlank()
+    ) {
+        _uiState.update {
+            it.copy(message = "Write extraction prompt")
+        }
+        return
+    }
+
+    viewModelScope.launch {
+
+        val totalFiles = state.selectedUris.size
+
+        _uiState.update {
+            it.copy(
+                isProcessing = true,
+                results = emptyList(),
+                progress = 0,
+                total = totalFiles,
+                message = "Processing..."
+            )
         }
 
-        if (state.selectedUris.isEmpty()) {
-            _uiState.update { it.copy(message = "Select files first") }
-            return
-        }
-        if (state.extractionMode == ExtractionMode.FIELDS && state.fields.none { it.enabled }) {
-            _uiState.update { it.copy(message = "Enable at least one field") }
-            return
-        }
-        if (state.extractionMode == ExtractionMode.FREE_TEXT && state.freeTextPrompt.isBlank()) {
-            _uiState.update { it.copy(message = "Write extraction prompt") }
-            return
-        }
-
-        viewModelScope.launch {
-            _uiState.update {
-                it.copy(
-                    isProcessing = true,
-                    results = emptyList(),
-                    progress = 0,
-                    total = state.selectedUris.size,
-                    message = "Processing..."
-                )
-            }
+        try {
 
             repository.processBatch(
                 uris = state.selectedUris,
                 fields = state.fields,
                 freeTextPrompt = state.freeTextPrompt,
-                isFreeTextMode = state.extractionMode == ExtractionMode.FREE_TEXT,
+                isFreeTextMode =
+                    state.extractionMode ==
+                            ExtractionMode.FREE_TEXT,
+
                 onProgress = { current, total, result ->
-                    _uiState.update { s ->
-                        s.copy(
+
+                    _uiState.update { currentState ->
+
+                        currentState.copy(
                             progress = current,
-                            results = s.results + result,
-                            message = "Processed " + current + " of " + total
+                            results =
+                                currentState.results + result,
+                            message =
+                                "Processed $current of $total"
                         )
                     }
                 }
             )
 
-            val successCount = _uiState.value.results.count { it.status == "success" }
-            val totalCount = _uiState.value.results.size
+            val finalResults = _uiState.value.results
+
+            val successCount =
+                finalResults.count {
+                    it.status == "success"
+                }
+
+            val errorCount =
+                finalResults.count {
+                    it.status == "error"
+                }
+
             _uiState.update {
                 it.copy(
                     isProcessing = false,
-                    message = "Done! " + successCount + "/" + totalCount + " succeeded"
+                    message =
+                        "Done! $successCount/$totalFiles succeeded" +
+                                if (errorCount > 0) {
+                                    " - $errorCount failed"
+                                } else {
+                                    ""
+                                }
+                )
+            }
+
+        } catch (e: Exception) {
+
+            _uiState.update {
+                it.copy(
+                    isProcessing = false,
+                    message =
+                        "Processing failed: " +
+                                (e.message
+                                    ?: "Unknown error")
                 )
             }
         }
     }
-}
+    }
+    
+            
+
+            
