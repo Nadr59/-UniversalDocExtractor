@@ -15,15 +15,33 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
 
-enum class ExtractionMode { FIELDS, FREE_TEXT }
+enum class ExtractionMode {
+    FIELDS,
+    FREE_TEXT
+}
 
 data class DocumentUiState(
     val fields: List<ExtractionField> = listOf(
-        ExtractionField(name = "اسم الطالب", description = "الاسم الكامل للطالب"),
-        ExtractionField(name = "رقم القيد", description = "رقم القيد أو التسجيل"),
-        ExtractionField(name = "المدرسة", description = "اسم المدرسة"),
-        ExtractionField(name = "المعدل", description = "المعدل أو النسبة"),
-        ExtractionField(name = "التاريخ", description = "تاريخ الإصدار أو السنة الدراسية")
+        ExtractionField(
+            name = "اسم الطالب",
+            description = "الاسم الكامل للطالب"
+        ),
+        ExtractionField(
+            name = "رقم القيد",
+            description = "رقم القيد أو التسجيل"
+        ),
+        ExtractionField(
+            name = "المدرسة",
+            description = "اسم المدرسة"
+        ),
+        ExtractionField(
+            name = "المعدل",
+            description = "المعدل أو النسبة"
+        ),
+        ExtractionField(
+            name = "التاريخ",
+            description = "تاريخ الإصدار أو السنة الدراسية"
+        )
     ),
     val results: List<ExtractionResult> = emptyList(),
     val selectedUris: List<Uri> = emptyList(),
@@ -38,16 +56,29 @@ data class DocumentUiState(
     val showSettings: Boolean = false
 )
 
-class DocumentViewModel(application: Application) : AndroidViewModel(application) {
+class DocumentViewModel(
+    application: Application
+) : AndroidViewModel(application) {
 
     private val repository = DocumentRepository(application)
-    private val _uiState = MutableStateFlow(DocumentUiState())
-    val uiState: StateFlow<DocumentUiState> = _uiState.asStateFlow()
 
-    fun getAiSettings(): AiSettings = repository.settings
+    private val _uiState = MutableStateFlow(
+        DocumentUiState()
+    )
+
+    val uiState: StateFlow<DocumentUiState> =
+        _uiState.asStateFlow()
+
+    fun getAiSettings(): AiSettings {
+        return repository.settings
+    }
 
     fun setDocuments(uris: List<Uri>) {
-        _uiState.update { it.copy(selectedUris = uris) }
+        _uiState.update {
+            it.copy(
+                selectedUris = uris
+            )
+        }
     }
 
     fun clearAll() {
@@ -63,23 +94,45 @@ class DocumentViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun setExtractionMode(mode: ExtractionMode) {
-        _uiState.update { it.copy(extractionMode = mode) }
+        _uiState.update {
+            it.copy(
+                extractionMode = mode
+            )
+        }
     }
 
     fun setFreeTextPrompt(prompt: String) {
-        _uiState.update { it.copy(freeTextPrompt = prompt) }
+        _uiState.update {
+            it.copy(
+                freeTextPrompt = prompt
+            )
+        }
     }
 
     fun showSettings() {
-        _uiState.update { it.copy(showSettings = true) }
+        _uiState.update {
+            it.copy(
+                showSettings = true
+            )
+        }
     }
 
     fun hideSettings() {
-        _uiState.update { it.copy(showSettings = false) }
+        _uiState.update {
+            it.copy(
+                showSettings = false
+            )
+        }
     }
 
-    fun addField(name: String, description: String) {
-        if (name.isBlank()) return
+    fun addField(
+        name: String,
+        description: String
+    ) {
+        if (name.isBlank()) {
+            return
+        }
+
         _uiState.update { state ->
             state.copy(
                 fields = state.fields + ExtractionField(
@@ -94,7 +147,11 @@ class DocumentViewModel(application: Application) : AndroidViewModel(application
 
     fun removeField(id: String) {
         _uiState.update { state ->
-            state.copy(fields = state.fields.filter { it.id != id })
+            state.copy(
+                fields = state.fields.filter {
+                    it.id != id
+                }
+            )
         }
     }
 
@@ -102,20 +159,34 @@ class DocumentViewModel(application: Application) : AndroidViewModel(application
         _uiState.update { state ->
             state.copy(
                 fields = state.fields.map { field ->
-                    if (field.id == id) field.copy(enabled = !field.enabled) else field
+                    if (field.id == id) {
+                        field.copy(
+                            enabled = !field.enabled
+                        )
+                    } else {
+                        field
+                    }
                 }
             )
         }
     }
 
-    fun updateField(id: String, name: String, description: String) {
+    fun updateField(
+        id: String,
+        name: String,
+        description: String
+    ) {
         _uiState.update { state ->
             state.copy(
                 fields = state.fields.map { field ->
-                    if (field.id == id) field.copy(
-                        name = name.trim(),
-                        description = description.trim()
-                    ) else field
+                    if (field.id == id) {
+                        field.copy(
+                            name = name.trim(),
+                            description = description.trim()
+                        )
+                    } else {
+                        field
+                    }
                 },
                 editingField = null
             )
@@ -123,127 +194,165 @@ class DocumentViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun showAddFieldDialog() {
-        _uiState.update { it.copy(showAddFieldDialog = true) }
+        _uiState.update {
+            it.copy(
+                showAddFieldDialog = true
+            )
+        }
     }
 
-    fun startEditingField(field: ExtractionField) {
-        _uiState.update { it.copy(editingField = field) }
+    fun startEditingField(
+        field: ExtractionField
+    ) {
+        _uiState.update {
+            it.copy(
+                editingField = field
+            )
+        }
     }
 
     fun dismissDialog() {
-        _uiState.update { it.copy(showAddFieldDialog = false, editingField = null) }
+        _uiState.update {
+            it.copy(
+                showAddFieldDialog = false,
+                editingField = null
+            )
+        }
     }
 
     fun processDocuments() {
-    val state = _uiState.value
 
-    if (!repository.settings.isConfigured()) {
-        _uiState.update {
-            it.copy(
-                showSettings = true,
-                message = "Configure API key first"
-            )
-        }
-        return
-    }
+        val state = _uiState.value
 
-    if (state.selectedUris.isEmpty()) {
-        _uiState.update {
-            it.copy(message = "Select files first")
-        }
-        return
-    }
-
-    if (
-        state.extractionMode == ExtractionMode.FIELDS &&
-        state.fields.none { it.enabled }
-    ) {
-        _uiState.update {
-            it.copy(message = "Enable at least one field")
-        }
-        return
-    }
-
-    if (
-        state.extractionMode == ExtractionMode.FREE_TEXT &&
-        state.freeTextPrompt.isBlank()
-    ) {
-        _uiState.update {
-            it.copy(message = "Write extraction prompt")
-        }
-        return
-    }
-
-    viewModelScope.launch {
-
-        val totalFiles = state.selectedUris.size
-
-        _uiState.update {
-            it.copy(
-                isProcessing = true,
-                results = emptyList(),
-                progress = 0,
-                total = totalFiles,
-                message = "Processing..."
-            )
-        }
-
-        try {
-            repository.processBatch(
-                uris = state.selectedUris,
-                fields = state.fields,
-                freeTextPrompt = state.freeTextPrompt,
-                isFreeTextMode =
-                    state.extractionMode == ExtractionMode.FREE_TEXT,
-
-                onProgress = { current, total, result ->
-
-                    _uiState.update { currentState ->
-                        currentState.copy(
-                            progress = current,
-                            results = currentState.results + result,
-                            message = "Processed $current of $total"
-                        )
-                    }
-                }
-            )
-
-            val finalResults = _uiState.value.results
-
-            val successCount = finalResults.count {
-                it.status == "success"
+        if (!repository.settings.isConfigured()) {
+            _uiState.update {
+                it.copy(
+                    showSettings = true,
+                    message = "Configure API key first"
+                )
             }
+            return
+        }
 
-            val errorCount = finalResults.count {
-                it.status == "error"
+        if (state.selectedUris.isEmpty()) {
+            _uiState.update {
+                it.copy(
+                    message = "Select files first"
+                )
             }
+            return
+        }
+
+        if (
+            state.extractionMode == ExtractionMode.FIELDS &&
+            state.fields.none { field ->
+                field.enabled
+            }
+        ) {
+            _uiState.update {
+                it.copy(
+                    message = "Enable at least one field"
+                )
+            }
+            return
+        }
+
+        if (
+            state.extractionMode == ExtractionMode.FREE_TEXT &&
+            state.freeTextPrompt.isBlank()
+        ) {
+            _uiState.update {
+                it.copy(
+                    message = "Write extraction prompt"
+                )
+            }
+            return
+        }
+
+        viewModelScope.launch {
+
+            val totalFiles =
+                state.selectedUris.size
 
             _uiState.update {
                 it.copy(
-                    isProcessing = false,
-                    message =
-                        "Done! $successCount/$totalFiles succeeded" +
-                            if (errorCount > 0) {
-                                " - $errorCount failed"
-                            } else {
-                                ""
-                            }
+                    isProcessing = true,
+                    results = emptyList(),
+                    progress = 0,
+                    total = totalFiles,
+                    message = "Processing..."
                 )
             }
 
-        } catch (e: Exception) {
+            try {
 
-            _uiState.update {
-                it.copy(
-                    isProcessing = false,
-                    message =
-                        "Processing failed: " +
-                            (e.message ?: "Unknown error")
-                  )
-              }
-          }
-       }
+                repository.processBatch(
+                    uris = state.selectedUris,
+                    fields = state.fields,
+                    freeTextPrompt = state.freeTextPrompt,
+                    isFreeTextMode =
+                        state.extractionMode ==
+                            ExtractionMode.FREE_TEXT,
+
+                    onProgress = {
+                            current,
+                            total,
+                            result ->
+
+                        _uiState.update { currentState ->
+
+                            currentState.copy(
+                                progress = current,
+                                results =
+                                    currentState.results + result,
+                                message =
+                                    "Processed $current of $total"
+                            )
+                        }
+                    }
+                )
+
+                val finalResults =
+                    _uiState.value.results
+
+                val successCount =
+                    finalResults.count {
+                        it.status == "success"
+                    }
+
+                val errorCount =
+                    finalResults.count {
+                        it.status == "error"
+                    }
+
+                _uiState.update {
+                    it.copy(
+                        isProcessing = false,
+                        message =
+                            "Done! " +
+                                "$successCount/$totalFiles succeeded" +
+                                if (errorCount > 0) {
+                                    " - $errorCount failed"
+                                } else {
+                                    ""
+                                }
+                    )
+                }
+
+            } catch (e: Exception) {
+
+                _uiState.update {
+                    it.copy(
+                        isProcessing = false,
+                        message =
+                            "Processing failed: " +
+                                (
+                                    e.message
+                                        ?: "Unknown error"
+                                )
+                    )
+                }
+            }
+        }
     }
-            
-
-            
+}
