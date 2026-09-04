@@ -153,10 +153,10 @@ class DocumentRepository(
                     }
 
                 val response =
-                callVisionApiWithRetry(
-                prompt = prompt,
-                 images = images
-                )
+                  callVisionApi(
+                  prompt = prompt,
+                  images = listOf(image)
+                 )
 
                 val results =
                     parseBatchResponse(
@@ -343,10 +343,10 @@ class DocumentRepository(
                 }
 
             val response =
-                callVisionApi(
-                    prompt = prompt,
-                    images = images
-                )
+              callVisionApiWithRetry(
+              prompt = prompt,
+              images = images
+              )
 
             val fileNames =
                 batch.map {
