@@ -6,99 +6,171 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
-import android.util.Base64
-import com.example.certextractor.data.local.AiSettings
 import com.example.certextractor.data.model.ExtractionField
 import com.example.certextractor.data.model.ExtractionResult
 import com.example.certextractor.utils.DynamicPromptBuilder
-import com.google.gson.Gson
 import com.google.gson.JsonElement
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.SocketTimeoutException
-import java.net.URL
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+import javax.inject.Inject
+import javax.inject.Singleton
+import kotlin.math.max
 
-class DocumentRepository(
+@Singleton
+class DocumentRepository @Inject constructor(
     private val context: Context
 ) {
 
-    val settings = AiSettings(context)
+    companion object {
+        private const val TAG = "DocumentRepository"
 
-    private val gson = Gson()
+        private const val DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
 
-    /*
-     * عدد الصور في طلب Gemini واحد.
-     *
-     * نبدأ بـ 3.
-     * إذا نجح الاختبار يمكن رفع العدد لاحقًا.
-     */
-    private val geminiBatchSize = 3
+        private const val OPENROUTER_URL =
+            "https://openrouter.ai/api/v1/chat/completions"
 
-    /*
-     * ============================================================
-     * صورة واحدة
-     * ============================================================
-     */
+        private const val OPENAI_URL =
+            "https://api.openai.com/v1/chat/completions"
+
+        private const val GROQ_URL =
+            "https://api.groq.com/openai/v1/chat/completions"
+
+        private const val MISTRAL_URL =
+            "https://api.mistral.ai/v1/chat/completions"
+
+        private const val CUSTOM_URL = ""
+
+        private const val MAX_IMAGE_DIMENSION = 2048
+        private const val JPEG_QUALITY = 85
+
+        private const val CONNECT_TIMEOUT_SECONDS = 120L
+        private const val READ_TIMEOUT_SECONDS = 180L
+
+        /*
+         * كل طلب Gemini يحتوي على 3 صور كحد أقصى.
+         *
+         * مثال:
+         * 200 صورة
+         *   ↓
+         * 3 + 3 + 3 + ... + 2
+         *
+         * وكل صورة تبقى نتيجة مستقلة.
+         */
+        private const val GEMINI_BATCH_SIZE = 3
+    }
+
+    private val httpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(
+                CONNECT_TIMEOUT_SECONDS,
+                TimeUnit.SECONDS
+            )
+            .readTimeout(
+                READ_TIMEOUT_SECONDS,
+                TimeUnit.SECONDS
+            )
+            .writeTimeout(
+                READ_TIMEOUT_SECONDS,
+                TimeUnit.SECONDS
+            )
+            .build()
+    }
+
+    // -------------------------------------------------------------------------
+    // إعدادات API
+    // -------------------------------------------------------------------------
+
+    private fun getApiKey(): String {
+        return try {
+            context
+                .getSharedPreferences("settings", Context.MODE_PRIVATE)
+                .getString("api_key", "")
+                .orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    private fun getProvider(): String {
+        return try {
+            context
+                .getSharedPreferences("settings", Context.MODE_PRIVATE)
+                .getString("provider", "Gemini")
+                .orEmpty()
+        } catch (_: Exception) {
+            "Gemini"
+        }
+    }
+
+    private fun getModel(): String {
+        return try {
+            context
+                .getSharedPreferences("settings", Context.MODE_PRIVATE)
+                .getString(
+                    "model",
+                    DEFAULT_GEMINI_MODEL
+                )
+                .orEmpty()
+        } catch (_: Exception) {
+            DEFAULT_GEMINI_MODEL
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // معالجة صورة واحدة
+    // -------------------------------------------------------------------------
 
     suspend fun processDocument(
         uri: Uri,
-        fileName: String,
         fields: List<ExtractionField>,
-        freeTextPrompt: String?,
-        isFreeTextMode: Boolean
+        freeTextPrompt: String = "",
+        useFreeText: Boolean = false
     ): ExtractionResult {
 
         return withContext(Dispatchers.IO) {
 
+            val fileName = getFileName(uri)
+
             try {
-
-                if (!settings.isConfigured()) {
-
-                    return@withContext ExtractionResult(
-                        fileName = fileName,
-                        status = "error",
-                        errorMessage =
-                            "Configure API key in Settings first"
-                    )
-                }
 
                 val image = prepareImage(uri)
 
-                val prompt =
-                    if (isFreeTextMode) {
-                        DynamicPromptBuilder
-                            .buildFreeTextPrompt(
-                                freeTextPrompt ?: ""
-                            )
-                    } else {
-                        DynamicPromptBuilder
-                            .buildFieldsPrompt(fields)
-                    }
-
-                val responseText =
-                    callVisionApi(
-                        prompt = prompt,
-                        images = listOf(image)
+                val prompt = if (useFreeText) {
+                    DynamicPromptBuilder.buildFreeTextPrompt(
+                        freeTextPrompt
                     )
-
-                val parsed =
-                    parseBatchResponse(
-                        content = responseText,
-                        fileNames = listOf(fileName)
+                } else {
+                    DynamicPromptBuilder.buildFieldsPrompt(
+                        fields
                     )
+                }
 
-                parsed.firstOrNull()
+                val response = callVisionApi(
+                    prompt = prompt,
+                    images = listOf(image)
+                )
+
+                val results = parseBatchResponse(
+                    response = response,
+                    fileNames = listOf(fileName)
+                )
+
+                results.firstOrNull()
                     ?: ExtractionResult(
                         fileName = fileName,
                         status = "error",
-                        errorMessage = "Empty AI response"
+                        errorMessage = "لم يتم العثور على نتيجة في استجابة الذكاء الاصطناعي"
                     )
 
             } catch (e: Exception) {
@@ -106,405 +178,385 @@ class DocumentRepository(
                 ExtractionResult(
                     fileName = fileName,
                     status = "error",
-                    errorMessage =
-                        e.message
-                            ?: e.javaClass.simpleName
+                    errorMessage = getErrorMessage(e)
                 )
             }
         }
     }
 
-    /*
-     * ============================================================
-     * معالجة مجموعة الصور
-     * ============================================================
-     *
-     * مثال:
-     *
-     * 200 صورة
-     *
-     * 3 + 3 + 3 + ...
-     *
-     * كل صورة تبقى سجلًا مستقلًا.
-     */
+    // -------------------------------------------------------------------------
+    // معالجة مجموعة الصور
+    // -------------------------------------------------------------------------
 
     suspend fun processBatch(
         uris: List<Uri>,
         fields: List<ExtractionField>,
-        freeTextPrompt: String?,
-        isFreeTextMode: Boolean,
-        onProgress: (
-            current: Int,
-            total: Int,
-            result: ExtractionResult
-        ) -> Unit
+        freeTextPrompt: String = "",
+        useFreeText: Boolean = false,
+        onProgress: suspend (current: Int, total: Int) -> Unit = { _, _ -> }
     ): List<ExtractionResult> {
 
-        if (uris.isEmpty()) {
-            return emptyList()
-        }
+        /*
+         * مهم جدًا:
+         *
+         * processDocuments() يتم استدعاؤها من ViewModel على Main.
+         *
+         * لذلك يجب أن يكون كامل جسم processBatch داخل IO،
+         * وليس فقط بعض أجزاء الكود.
+         *
+         * هذا يمنع:
+         *
+         * NetworkOnMainThreadException
+         *
+         * ويضمن أن:
+         * - قراءة الملفات
+         * - تحويل الصور
+         * - Base64
+         * - HTTP requests
+         * - Gemini
+         * - OpenRouter
+         * - OpenAI
+         *
+         * كلها تعمل خارج Main Thread.
+         */
+        return withContext(Dispatchers.IO) {
 
-        val prompt =
-            if (isFreeTextMode) {
-                DynamicPromptBuilder
-                    .buildFreeTextPrompt(
-                        freeTextPrompt ?: ""
-                    )
-            } else {
-                DynamicPromptBuilder
-                    .buildFieldsPrompt(fields)
+            if (uris.isEmpty()) {
+                return@withContext emptyList()
             }
 
-        val total = uris.size
+            val total = uris.size
 
-        val documents =
-            uris.mapIndexed { index, uri ->
-
+            val documents = uris.mapIndexed { index, uri ->
                 DocumentItem(
                     index = index,
                     uri = uri,
-                    fileName = getFileName(
-                        uri,
-                        index
-                    )
+                    fileName = getFileName(uri)
                 )
             }
 
-        val indexedResults =
-            mutableListOf<IndexedResult>()
-
-        var position = 0
-
-        while (position < documents.size) {
-
-            val end =
-                minOf(
-                    position + geminiBatchSize,
-                    documents.size
-                )
-
-            val batch =
-                documents.subList(
-                    position,
-                    end
-                )
-
-            val batchResults =
-                processBatchWithFallback(
-                    batch = batch,
-                    prompt = prompt
-                )
-
-            val orderedBatch =
-                batchResults.sortedBy {
-                    it.index
-                }
-
-            for (item in orderedBatch) {
-
-                indexedResults.add(item)
-
-                onProgress(
-                    indexedResults.size,
-                    total,
-                    item.result
-                )
-            }
-
-            position = end
+            val allResults = mutableListOf<IndexedResult>()
 
             /*
-             * تأخير بسيط بين الطلبات.
+             * Gemini:
+             *
+             * 3 صور في الطلب الواحد.
+             *
+             * إذا فشلت مجموعة من 3 صور:
+             *
+             * 3
+             * ↓
+             * 1 + 2
+             * ↓
+             * إذا فشلت 2:
+             * 1 + 1
+             *
+             * وبذلك لا تضيع بقية الصور بسبب صورة واحدة.
              */
-            if (position < documents.size) {
-                delay(1000)
-            }
-        }
+            val batches = documents.chunked(GEMINI_BATCH_SIZE)
 
-        /*
-         * الترتيب النهائي حسب ترتيب الصور الأصلية.
-         */
-        return indexedResults
-            .sortedBy { it.index }
-            .map { it.result }
+            var processedCount = 0
+
+            for (batch in batches) {
+
+                val batchResults = processBatchWithFallback(
+                    batch = batch,
+                    fields = fields,
+                    freeTextPrompt = freeTextPrompt,
+                    useFreeText = useFreeText
+                )
+
+                allResults.addAll(batchResults)
+
+                processedCount += batch.size
+
+                onProgress(
+                    processedCount,
+                    total
+                )
+
+                /*
+                 * تأخير بسيط بين الطلبات لتقليل الضغط على API.
+                 *
+                 * delay لا يحجز الخيط.
+                 */
+                if (processedCount < total) {
+                    delay(1000L)
+                }
+            }
+
+            /*
+             * الترتيب النهائي حسب ترتيب الصور الأصلية.
+             *
+             * لا نعتمد على اسم الملف لأن أسماء الملفات قد تكون متشابهة
+             * أو قد تكون متطابقة في بعض الحالات.
+             */
+            allResults
+                .sortedBy { it.index }
+                .map { it.result }
+        }
     }
 
-    /*
-     * ============================================================
-     * Batch مع fallback
-     * ============================================================
-     *
-     * إذا فشل:
-     *
-     * 3 صور
-     *
-     * تصبح:
-     *
-     * 1 + 2
-     *
-     * وإذا فشل الـ2:
-     *
-     * 1 + 1
-     */
+    // -------------------------------------------------------------------------
+    // معالجة دفعة مع Fallback وتقسيم تلقائي
+    // -------------------------------------------------------------------------
 
     private suspend fun processBatchWithFallback(
         batch: List<DocumentItem>,
-        prompt: String
+        fields: List<ExtractionField>,
+        freeTextPrompt: String,
+        useFreeText: Boolean
     ): List<IndexedResult> {
+
+        /*
+         * هذه الدالة تُستدعى من داخل withContext(Dispatchers.IO)
+         * الموجود في processBatch().
+         */
 
         if (batch.isEmpty()) {
             return emptyList()
         }
 
-        try {
+        return try {
 
-            val images =
-                batch.map {
-                    prepareImage(it.uri)
-                }
+            val images = batch.map { document ->
+                prepareImage(document.uri)
+            }
 
-            val responseText =
-                callVisionApi(
-                    prompt = prompt,
-                    images = images
+            val prompt = if (useFreeText) {
+                DynamicPromptBuilder.buildFreeTextPrompt(
+                    freeTextPrompt
                 )
-
-            val parsed =
-                parseBatchResponse(
-                    content = responseText,
-                    fileNames =
-                        batch.map {
-                            it.fileName
-                        }
-                )
-
-            /*
-             * يجب أن يكون عدد النتائج مساويًا
-             * لعدد الصور.
-             */
-            if (parsed.size != batch.size) {
-
-                throw Exception(
-                    "AI returned ${parsed.size} results " +
-                        "for ${batch.size} images"
+            } else {
+                DynamicPromptBuilder.buildFieldsPrompt(
+                    fields
                 )
             }
 
-            return batch.mapIndexed { index, document ->
+            val response = callVisionApi(
+                prompt = prompt,
+                images = images
+            )
+
+            val fileNames = batch.map {
+                it.fileName
+            }
+
+            val parsedResults = parseBatchResponse(
+                response = response,
+                fileNames = fileNames
+            )
+
+            /*
+             * يجب أن نحصل على نتيجة لكل صورة.
+             *
+             * إذا أرسلنا 3 صور ولكن Gemini أعاد نتيجتين فقط،
+             * نعتبر الدفعة غير مكتملة ونستخدم التقسيم.
+             */
+            if (parsedResults.size != batch.size) {
+
+                throw IOException(
+                    "عدد النتائج لا يطابق عدد الصور: " +
+                            "تم إرسال ${batch.size} صور، " +
+                            "لكن تم استلام ${parsedResults.size} نتائج"
+                )
+            }
+
+            batch.mapIndexed { index, document ->
 
                 IndexedResult(
                     index = document.index,
-                    result = parsed[index]
+                    result = parsedResults[index]
                 )
             }
 
         } catch (e: Exception) {
 
             /*
-             * صورة واحدة:
-             * لا يمكن تقسيمها أكثر.
+             * إذا كانت الدفعة تحتوي على أكثر من صورة،
+             * نقسمها بدل إسقاط جميع الصور.
              */
-            if (batch.size == 1) {
+            if (batch.size > 1) {
 
-                val document =
-                    batch.first()
+                val middle = batch.size / 2
 
-                return listOf(
-                    IndexedResult(
-                        index = document.index,
-                        result =
-                            ExtractionResult(
-                                fileName =
-                                    document.fileName,
-                                status = "error",
-                                errorMessage =
-                                    e.message
-                                        ?: "Processing failed"
-                            )
-                    )
-                )
-            }
-
-            /*
-             * تقسيم المجموعة.
-             */
-            val middle =
-                batch.size / 2
-
-            val firstHalf =
-                batch.subList(
+                val firstHalf = batch.subList(
                     0,
                     middle
                 )
 
-            val secondHalf =
-                batch.subList(
+                val secondHalf = batch.subList(
                     middle,
                     batch.size
                 )
 
-            val firstResults =
-                processBatchWithFallback(
+                val firstResults = processBatchWithFallback(
                     batch = firstHalf,
-                    prompt = prompt
+                    fields = fields,
+                    freeTextPrompt = freeTextPrompt,
+                    useFreeText = useFreeText
                 )
 
-            val secondResults =
-                processBatchWithFallback(
+                val secondResults = processBatchWithFallback(
                     batch = secondHalf,
-                    prompt = prompt
+                    fields = fields,
+                    freeTextPrompt = freeTextPrompt,
+                    useFreeText = useFreeText
                 )
 
-            return firstResults + secondResults
+                firstResults + secondResults
+
+            } else {
+
+                /*
+                 * وصلنا إلى صورة واحدة وفشلت.
+                 * هنا نسجل الخطأ بدل أن نخفيه.
+                 */
+                val document = batch.first()
+
+                listOf(
+                    IndexedResult(
+                        index = document.index,
+                        result = ExtractionResult(
+                            fileName = document.fileName,
+                            status = "error",
+                            errorMessage = getErrorMessage(e)
+                        )
+                    )
+                )
+            }
         }
     }
 
-    /*
-     * ============================================================
-     * اختيار مزود الذكاء الاصطناعي
-     * ============================================================
-     */
+    // -------------------------------------------------------------------------
+    // استدعاء مزود الذكاء الاصطناعي
+    // -------------------------------------------------------------------------
 
-    private fun callVisionApi(
+    private suspend fun callVisionApi(
         prompt: String,
         images: List<PreparedImage>
     ): String {
 
-        return when (settings.provider) {
+        return when (getProvider().lowercase()) {
 
-            "gemini" ->
+            "gemini",
+            "google",
+            "google gemini" -> {
                 callGeminiVision(
-                    prompt,
-                    images
+                    prompt = prompt,
+                    images = images
                 )
+            }
 
-            "openrouter" ->
-                callOpenRouterVision(
-                    prompt,
-                    images
+            "openrouter" -> {
+                callOpenAICompatibleVision(
+                    url = OPENROUTER_URL,
+                    apiKey = getApiKey(),
+                    model = getModel(),
+                    prompt = prompt,
+                    images = images
                 )
+            }
 
-            "openai" ->
-                callOpenAIVision(
-                    prompt,
-                    images
+            "openai" -> {
+                callOpenAICompatibleVision(
+                    url = OPENAI_URL,
+                    apiKey = getApiKey(),
+                    model = getModel(),
+                    prompt = prompt,
+                    images = images
                 )
+            }
 
-            "groq" ->
-                callGroqVision(
-                    prompt,
-                    images
+            "groq" -> {
+                callOpenAICompatibleVision(
+                    url = GROQ_URL,
+                    apiKey = getApiKey(),
+                    model = getModel(),
+                    prompt = prompt,
+                    images = images
                 )
+            }
 
-            "mistral" ->
-                callMistralVision(
-                    prompt,
-                    images
+            "mistral" -> {
+                callOpenAICompatibleVision(
+                    url = MISTRAL_URL,
+                    apiKey = getApiKey(),
+                    model = getModel(),
+                    prompt = prompt,
+                    images = images
                 )
+            }
 
-            "custom" ->
-                callCustomVision(
-                    prompt,
-                    images
+            "custom" -> {
+                callOpenAICompatibleVision(
+                    url = CUSTOM_URL,
+                    apiKey = getApiKey(),
+                    model = getModel(),
+                    prompt = prompt,
+                    images = images
                 )
+            }
 
-            else ->
-                throw Exception(
-                    "Unknown provider: ${settings.provider}"
+            else -> {
+                callGeminiVision(
+                    prompt = prompt,
+                    images = images
                 )
+            }
         }
     }
 
-    /*
-     * ============================================================
-     * Gemini
-     * ============================================================
-     */
+    // -------------------------------------------------------------------------
+    // Gemini Vision
+    // -------------------------------------------------------------------------
 
     private fun callGeminiVision(
         prompt: String,
         images: List<PreparedImage>
     ): String {
 
-        val apiKey =
-            settings.geminiKey.trim()
+        val apiKey = getApiKey()
 
         if (apiKey.isBlank()) {
-            throw Exception(
-                "Gemini API key is empty"
+            throw IOException(
+                "مفتاح Gemini API غير موجود"
             )
         }
 
         /*
-         * نستخدم النموذج الذي اختاره المستخدم أولًا.
-         *
-         * ثم النماذج الاحتياطية.
+         * النموذج المحدد من الإعدادات أولًا،
+         * ثم نماذج fallback.
          */
-        val modelsToTry =
-            listOf(
-                settings.geminiModel.trim(),
-                "gemini-3.6-flash",
-                "gemini-3.5-flash",
-                "gemini-3.5-flash-lite"
-            )
-                .filter {
-                    it.isNotBlank()
-                }
-                .distinct()
+        val configuredModel = getModel()
 
-        val errors =
-            mutableListOf<String>()
+        val models = linkedSetOf(
+            configuredModel,
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite"
+        ).filter {
+            it.isNotBlank()
+        }
 
-        for (model in modelsToTry) {
+        var lastError: Exception? = null
 
-            var conn:
-                HttpURLConnection? = null
+        for (model in models) {
 
             try {
 
                 val url =
-                    URL(
-                        "https://generativelanguage.googleapis.com/" +
-                            "v1beta/models/" +
-                            "$model:generateContent?key=$apiKey"
-                    )
+                    "https://generativelanguage.googleapis.com/" +
+                            "v1beta/models/$model:generateContent" +
+                            "?key=$apiKey"
 
-                conn =
-                    url.openConnection()
-                        as HttpURLConnection
-
-                conn.apply {
-
-                    requestMethod = "POST"
-
-                    setRequestProperty(
-                        "Content-Type",
-                        "application/json; charset=UTF-8"
-                    )
-
-                    connectTimeout = 120_000
-
-                    readTimeout = 180_000
-
-                    doOutput = true
-
-                    doInput = true
-
-                    useCaches = false
-                }
+                val parts = JSONArray()
 
                 /*
-                 * بناء أجزاء الطلب.
-                 */
-                val parts =
-                    JSONArray()
-
-                /*
-                 * Prompt.
+                 * Prompt أولًا.
                  */
                 parts.put(
                     JSONObject().apply {
-
                         put(
                             "text",
                             prompt
@@ -513,22 +565,21 @@ class DocumentRepository(
                 )
 
                 /*
-                 * الصور.
+                 * ثم جميع الصور في نفس الطلب.
+                 *
+                 * كل صورة inline_data مستقلة.
                  */
-                images.forEach { image ->
+                for (image in images) {
 
                     parts.put(
                         JSONObject().apply {
-
                             put(
                                 "inline_data",
                                 JSONObject().apply {
-
                                     put(
                                         "mime_type",
                                         image.mimeType
                                     )
-
                                     put(
                                         "data",
                                         image.base64
@@ -539,888 +590,783 @@ class DocumentRepository(
                     )
                 }
 
-                val body =
+                val contents = JSONArray()
+
+                contents.put(
                     JSONObject().apply {
-
                         put(
-                            "contents",
-                            JSONArray().apply {
-
-                                put(
-                                    JSONObject().apply {
-
-                                        put(
-                                            "role",
-                                            "user"
-                                        )
-
-                                        put(
-                                            "parts",
-                                            parts
-                                        )
-                                    }
-                                )
-                            }
+                            "role",
+                            "user"
                         )
 
                         put(
-                            "generationConfig",
-                            JSONObject().apply {
-
-                                put(
-                                    "temperature",
-                                    0.1
-                                )
-
-                                /*
-                                 * نستخدم سقفًا معقولًا.
-                                 */
-                                put(
-                                    "maxOutputTokens",
-                                    8192
-                                )
-
-                                put(
-                                    "responseMimeType",
-                                    "application/json"
-                                )
-                            }
+                            "parts",
+                            parts
                         )
                     }
-
-                OutputStreamWriter(
-                    conn.outputStream,
-                    Charsets.UTF_8
-                ).use { writer ->
-
-                    writer.write(
-                        body.toString()
-                    )
-
-                    writer.flush()
-                }
-
-                val responseCode =
-                    conn.responseCode
-
-                if (responseCode != 200) {
-
-                    val error =
-                        getErrorMessage(conn)
-
-                    errors.add(
-                        "$model: $error"
-                    )
-
-                    conn.disconnect()
-
-                    continue
-                }
-
-                val response =
-                    conn.inputStream
-                        .bufferedReader(
-                            Charsets.UTF_8
-                        )
-                        .use {
-                            it.readText()
-                        }
-
-                conn.disconnect()
-
-                /*
-                 * تحليل استجابة Gemini.
-                 */
-                val json =
-                    JSONObject(response)
-
-                val candidates =
-                    json.optJSONArray(
-                        "candidates"
-                    )
-
-                if (
-                    candidates != null &&
-                    candidates.length() > 0
-                ) {
-
-                    val candidate =
-                        candidates.getJSONObject(0)
-
-                    val content =
-                        candidate.optJSONObject(
-                            "content"
-                        )
-
-                    val responseParts =
-                        content?.optJSONArray(
-                            "parts"
-                        )
-
-                    if (
-                        responseParts != null &&
-                        responseParts.length() > 0
-                    ) {
-
-                        val textParts =
-                            mutableListOf<String>()
-
-                        for (
-                            i in
-                            0 until responseParts.length()
-                        ) {
-
-                            val text =
-                                responseParts
-                                    .getJSONObject(i)
-                                    .optString(
-                                        "text",
-                                        ""
-                                    )
-
-                            if (
-                                text.isNotBlank()
-                            ) {
-                                textParts.add(
-                                    text
-                                )
-                            }
-                        }
-
-                        if (
-                            textParts.isNotEmpty()
-                        ) {
-
-                            return textParts
-                                .joinToString("\n")
-                                .trim()
-                        }
-                    }
-
-                    /*
-                     * إذا لم يوجد نص،
-                     * نحاول معرفة سبب توقف النموذج.
-                     */
-                    val finishReason =
-                        candidate.optString(
-                            "finishReason",
-                            ""
-                        )
-
-                    if (
-                        finishReason.isNotBlank()
-                    ) {
-
-                        errors.add(
-                            "$model: " +
-                                "No text returned. " +
-                                "finishReason=$finishReason"
-                        )
-
-                    } else {
-
-                        errors.add(
-                            "$model: Empty candidate content"
-                        )
-                    }
-
-                } else {
-
-                    errors.add(
-                        "$model: No candidates in response"
-                    )
-                }
-
-            } catch (
-                e: SocketTimeoutException
-            ) {
-
-                errors.add(
-                    "$model: timeout after " +
-                        "180 seconds"
                 )
 
-                conn?.disconnect()
-
-            } catch (e: Exception) {
-
-                val message =
-                    e.message
-                        ?: e.javaClass.simpleName
-
-                errors.add(
-                    "$model: ${message.take(500)}"
-                )
-
-                conn?.disconnect()
-            }
-        }
-
-        throw Exception(
-            "Gemini failed\n\n" +
-                errors.joinToString(
-                    "\n"
-                )
-        )
-    }
-
-    /*
-     * ============================================================
-     * OpenRouter
-     * ============================================================
-     */
-
-    private fun callOpenRouterVision(
-        prompt: String,
-        images: List<PreparedImage>
-    ): String {
-
-        val apiKey =
-            settings.openrouterKey.trim()
-
-        if (apiKey.isBlank()) {
-            throw Exception(
-                "OpenRouter API key is empty"
-            )
-        }
-
-        val cleanModel =
-            settings.openrouterModel
-                .trim()
-                .removeSuffix(":free")
-                .trim()
-
-        val models =
-            mutableListOf<String>()
-
-        if (
-            cleanModel.isNotBlank()
-        ) {
-            models.add(
-                cleanModel
-            )
-        }
-
-        val fallbacks =
-            listOf(
-                "google/gemini-3.6-flash",
-                "google/gemini-3.5-flash",
-                "qwen/qwen-2.5-vl-72b-instruct:free"
-            )
-
-        for (model in fallbacks) {
-
-            if (model !in models) {
-                models.add(model)
-            }
-        }
-
-        return callOpenAICompatibleVision(
-            url =
-                "https://openrouter.ai/api/v1/chat/completions",
-            apiKey = apiKey,
-            models = models,
-            prompt = prompt,
-            images = images,
-            extraHeaders =
-                mapOf(
-                    "HTTP-Referer" to
-                        "https://github.com/Nadr59/UniversalDocExtractor",
-                    "X-Title" to
-                        "UniversalDocExtractor"
-                )
-        )
-    }
-
-    /*
-     * ============================================================
-     * OpenAI
-     * ============================================================
-     */
-
-    private fun callOpenAIVision(
-        prompt: String,
-        images: List<PreparedImage>
-    ): String {
-
-        val apiKey =
-            settings.openaiKey.trim()
-
-        if (apiKey.isBlank()) {
-            throw Exception(
-                "OpenAI API key is empty"
-            )
-        }
-
-        return callOpenAICompatibleVision(
-            url =
-                "https://api.openai.com/v1/chat/completions",
-            apiKey = apiKey,
-            models =
-                listOf(
-                    settings.openaiModel.trim(),
-                    "gpt-4o-mini",
-                    "gpt-4o"
-                ),
-            prompt = prompt,
-            images = images,
-            extraHeaders =
-                emptyMap()
-        )
-    }
-
-    /*
-     * ============================================================
-     * Groq
-     * ============================================================
-     */
-
-    private fun callGroqVision(
-        prompt: String,
-        images: List<PreparedImage>
-    ): String {
-
-        val apiKey =
-            settings.groqKey.trim()
-
-        if (apiKey.isBlank()) {
-            throw Exception(
-                "Groq API key is empty"
-            )
-        }
-
-        val models =
-            mutableListOf<String>()
-
-        val chosen =
-            settings.groqModel.trim()
-
-        if (
-            chosen.isNotBlank()
-        ) {
-            models.add(chosen)
-        }
-
-        val fallbacks =
-            listOf(
-                "llama-3.3-70b-versatile",
-                "llama-3.1-8b-instant"
-            )
-
-        for (model in fallbacks) {
-
-            if (model !in models) {
-                models.add(model)
-            }
-        }
-
-        return callOpenAICompatibleVision(
-            url =
-                "https://api.groq.com/openai/v1/chat/completions",
-            apiKey = apiKey,
-            models = models,
-            prompt = prompt,
-            images = images,
-            extraHeaders =
-                emptyMap()
-        )
-    }
-
-    /*
-     * ============================================================
-     * Mistral
-     * ============================================================
-     */
-
-    private fun callMistralVision(
-        prompt: String,
-        images: List<PreparedImage>
-    ): String {
-
-        val apiKey =
-            settings.mistralKey.trim()
-
-        if (apiKey.isBlank()) {
-            throw Exception(
-                "Mistral API key is empty"
-            )
-        }
-
-        return callOpenAICompatibleVision(
-            url =
-                "https://api.mistral.ai/v1/chat/completions",
-            apiKey = apiKey,
-            models =
-                listOf(
-                    settings.mistralModel.trim(),
-                    "pixtral-12b-2409"
-                ),
-            prompt = prompt,
-            images = images,
-            extraHeaders =
-                emptyMap()
-        )
-    }
-
-    /*
-     * ============================================================
-     * Custom
-     * ============================================================
-     */
-
-    private fun callCustomVision(
-        prompt: String,
-        images: List<PreparedImage>
-    ): String {
-
-        val baseUrl =
-            settings.customUrl
-                .trim()
-                .trimEnd('/')
-
-        val apiKey =
-            settings.customKey.trim()
-
-        if (baseUrl.isBlank()) {
-            throw Exception(
-                "Custom server URL is empty"
-            )
-        }
-
-        if (apiKey.isBlank()) {
-            throw Exception(
-                "Custom API key is empty"
-            )
-        }
-
-        return callOpenAICompatibleVision(
-            url =
-                "$baseUrl/v1/chat/completions",
-            apiKey = apiKey,
-            models =
-                listOf(
-                    settings.customModel.trim()
-                ),
-            prompt = prompt,
-            images = images,
-            extraHeaders =
-                emptyMap()
-        )
-    }
-
-    /*
-     * ============================================================
-     * OpenAI-compatible API
-     * ============================================================
-     */
-
-    private fun callOpenAICompatibleVision(
-        url: String,
-        apiKey: String,
-        models: List<String>,
-        prompt: String,
-        images: List<PreparedImage>,
-        extraHeaders: Map<String, String>
-    ): String {
-
-        val errors =
-            mutableListOf<String>()
-
-        for (model in models) {
-
-            if (model.isBlank()) {
-                continue
-            }
-
-            var conn:
-                HttpURLConnection? = null
-
-            try {
-
-                conn =
-                    URL(url)
-                        .openConnection()
-                        as HttpURLConnection
-
-                conn.apply {
-
-                    requestMethod = "POST"
-
-                    setRequestProperty(
-                        "Content-Type",
-                        "application/json; charset=UTF-8"
-                    )
-
-                    setRequestProperty(
-                        "Authorization",
-                        "Bearer $apiKey"
-                    )
-
-                    extraHeaders.forEach {
-                        (key, value) ->
-
-                        setRequestProperty(
-                            key,
-                            value
-                        )
-                    }
-
-                    connectTimeout = 120_000
-
-                    readTimeout = 180_000
-
-                    doOutput = true
-
-                    doInput = true
-
-                    useCaches = false
-                }
-
-                val contentArray =
-                    JSONArray()
-
-                contentArray.put(
+                val generationConfig =
                     JSONObject().apply {
-
-                        put(
-                            "type",
-                            "text"
-                        )
-
-                        put(
-                            "text",
-                            prompt
-                        )
-                    }
-                )
-
-                images.forEach { image ->
-
-                    contentArray.put(
-                        JSONObject().apply {
-
-                            put(
-                                "type",
-                                "image_url"
-                            )
-
-                            put(
-                                "image_url",
-                                JSONObject().apply {
-
-                                    put(
-                                        "url",
-                                        "data:${image.mimeType};base64,${image.base64}"
-                                    )
-                                }
-                            )
-                        }
-                    )
-                }
-
-                val body =
-                    JSONObject().apply {
-
-                        put(
-                            "model",
-                            model
-                        )
-
-                        put(
-                            "messages",
-                            JSONArray().apply {
-
-                                put(
-                                    JSONObject().apply {
-
-                                        put(
-                                            "role",
-                                            "user"
-                                        )
-
-                                        put(
-                                            "content",
-                                            contentArray
-                                        )
-                                    }
-                                )
-                            }
-                        )
 
                         put(
                             "temperature",
                             0.1
                         )
 
+                        /*
+                         * حجم ثابت مناسب للدفعة.
+                         *
+                         * لا نضرب 4096 × عدد الصور،
+                         * لأن المطلوب عادة بيانات مختصرة.
+                         */
                         put(
-                            "max_tokens",
+                            "maxOutputTokens",
                             8192
                         )
+
+                        put(
+                            "responseMimeType",
+                            "application/json"
+                        )
                     }
 
-                OutputStreamWriter(
-                    conn.outputStream,
-                    Charsets.UTF_8
-                ).use { writer ->
+                val body =
+                    JSONObject().apply {
 
-                    writer.write(
-                        body.toString()
-                    )
+                        put(
+                            "contents",
+                            contents
+                        )
 
-                    writer.flush()
-                }
+                        put(
+                            "generationConfig",
+                            generationConfig
+                        )
+                    }
 
-                val responseCode =
-                    conn.responseCode
+                val requestBody =
+                    body
+                        .toString()
+                        .toRequestBody(
+                            "application/json; charset=utf-8"
+                                .toMediaType()
+                        )
 
-                if (
-                    responseCode != 200
-                ) {
-
-                    val error =
-                        getErrorMessage(conn)
-
-                    errors.add(
-                        "$model: $error"
-                    )
-
-                    conn.disconnect()
-
-                    continue
-                }
+                val request =
+                    Request.Builder()
+                        .url(url)
+                        .post(requestBody)
+                        .addHeader(
+                            "Content-Type",
+                            "application/json"
+                        )
+                        .build()
 
                 val response =
-                    conn.inputStream
-                        .bufferedReader(
-                            Charsets.UTF_8
-                        )
-                        .use {
-                            it.readText()
-                        }
+                    httpClient.newCall(request).execute()
 
-                conn.disconnect()
+                val responseBody =
+                    response.body?.string().orEmpty()
 
-                val json =
-                    JSONObject(response)
+                if (!response.isSuccessful) {
 
-                val choices =
-                    json.optJSONArray(
-                        "choices"
+                    throw IOException(
+                        "HTTP ${response.code}: " +
+                                "${response.message}\n" +
+                                "Response: $responseBody"
+                    )
+                }
+
+                if (responseBody.isBlank()) {
+                    throw IOException(
+                        "Gemini أعاد استجابة فارغة"
+                    )
+                }
+
+                val root =
+                    JSONObject(responseBody)
+
+                /*
+                 * Gemini قد يعيد:
+                 *
+                 * candidates
+                 *   -> content
+                 *      -> parts
+                 *         -> text
+                 */
+                val candidates =
+                    root.optJSONArray(
+                        "candidates"
                     )
 
                 if (
-                    choices != null &&
-                    choices.length() > 0
+                    candidates == null ||
+                    candidates.length() == 0
                 ) {
+                    throw IOException(
+                        "Gemini لم يُرجع candidates.\n" +
+                                "Response: $responseBody"
+                    )
+                }
 
-                    val content =
-                        choices
-                            .getJSONObject(0)
-                            .optJSONObject(
-                                "message"
-                            )
-                            ?.optString(
-                                "content",
-                                ""
-                            )
+                val candidate =
+                    candidates.optJSONObject(0)
+                        ?: throw IOException(
+                            "Gemini أعاد candidate غير صالح"
+                        )
 
-                    if (
-                        !content.isNullOrBlank()
-                    ) {
+                val content =
+                    candidate.optJSONObject(
+                        "content"
+                    )
+                        ?: throw IOException(
+                            "Gemini أعاد content غير موجود"
+                        )
 
-                        return content.trim()
+                val responseParts =
+                    content.optJSONArray(
+                        "parts"
+                    )
+                        ?: throw IOException(
+                            "Gemini أعاد parts غير موجودة"
+                        )
+
+                val textBuilder =
+                    StringBuilder()
+
+                for (i in 0 until responseParts.length()) {
+
+                    val part =
+                        responseParts.optJSONObject(i)
+                            ?: continue
+
+                    val text =
+                        part.optString(
+                            "text",
+                            ""
+                        )
+
+                    if (text.isNotBlank()) {
+                        textBuilder.append(text)
                     }
                 }
 
-                errors.add(
-                    "$model: Empty response"
+                val result =
+                    textBuilder.toString().trim()
+
+                if (result.isBlank()) {
+                    throw IOException(
+                        "Gemini أعاد نصًا فارغًا.\n" +
+                                "Response: $responseBody"
+                    )
+                }
+
+                return result
+
+            } catch (e: java.net.SocketTimeoutException) {
+
+                lastError = IOException(
+                    "$model: timeout أثناء الاتصال بـ Gemini",
+                    e
                 )
-
-            } catch (
-                e: SocketTimeoutException
-            ) {
-
-                errors.add(
-                    "$model: timeout after " +
-                        "180 seconds"
-                )
-
-                conn?.disconnect()
 
             } catch (e: Exception) {
 
-                errors.add(
-                    "$model: " +
-                        (
-                            e.message
-                                ?: e.javaClass.simpleName
-                        ).take(500)
-                )
-
-                conn?.disconnect()
+                lastError = e
             }
         }
 
-        throw Exception(
-            "Failed:\n" +
-                errors.joinToString("\n")
+        throw IOException(
+            buildString {
+
+                appendLine("Gemini failed")
+
+                if (lastError != null) {
+                    append(
+                        getErrorMessage(
+                            lastError
+                        )
+                    )
+                }
+            },
+            lastError
         )
     }
 
-    /*
-     * ============================================================
-     * تجهيز الصورة
-     * ============================================================
-     */
+    // -------------------------------------------------------------------------
+    // OpenAI Compatible Vision APIs
+    // -------------------------------------------------------------------------
+
+    private fun callOpenAICompatibleVision(
+        url: String,
+        apiKey: String,
+        model: String,
+        prompt: String,
+        images: List<PreparedImage>
+    ): String {
+
+        if (apiKey.isBlank()) {
+            throw IOException(
+                "API key غير موجود"
+            )
+        }
+
+        if (url.isBlank()) {
+            throw IOException(
+                "رابط API المخصص غير موجود"
+            )
+        }
+
+        val content =
+            JSONArray()
+
+        content.put(
+            JSONObject().apply {
+                put(
+                    "type",
+                    "text"
+                )
+
+                put(
+                    "text",
+                    prompt
+                )
+            }
+        )
+
+        for (image in images) {
+
+            content.put(
+                JSONObject().apply {
+
+                    put(
+                        "type",
+                        "image_url"
+                    )
+
+                    put(
+                        "image_url",
+                        JSONObject().apply {
+
+                            put(
+                                "url",
+                                "data:${image.mimeType};base64,${image.base64}"
+                            )
+                        }
+                    )
+                }
+            )
+        }
+
+        val messages =
+            JSONArray()
+
+        messages.put(
+            JSONObject().apply {
+
+                put(
+                    "role",
+                    "user"
+                )
+
+                put(
+                    "content",
+                    content
+                )
+            }
+        )
+
+        val body =
+            JSONObject().apply {
+
+                put(
+                    "model",
+                    model
+                )
+
+                put(
+                    "messages",
+                    messages
+                )
+
+                put(
+                    "temperature",
+                    0.1
+                )
+
+                put(
+                    "max_tokens",
+                    8192
+                )
+
+                put(
+                    "response_format",
+                    JSONObject().apply {
+                        put(
+                            "type",
+                            "json_object"
+                        )
+                    }
+                )
+            }
+
+        val requestBody =
+            body
+                .toString()
+                .toRequestBody(
+                    "application/json; charset=utf-8"
+                        .toMediaType()
+                )
+
+        val request =
+            Request.Builder()
+                .url(url)
+                .post(requestBody)
+                .addHeader(
+                    "Authorization",
+                    "Bearer $apiKey"
+                )
+                .addHeader(
+                    "Content-Type",
+                    "application/json"
+                )
+                .build()
+
+        val response =
+            httpClient.newCall(request).execute()
+
+        val responseBody =
+            response.body?.string().orEmpty()
+
+        if (!response.isSuccessful) {
+
+            throw IOException(
+                "HTTP ${response.code}: " +
+                        "${response.message}\n" +
+                        "Response: $responseBody"
+            )
+        }
+
+        val root =
+            JSONObject(responseBody)
+
+        val choices =
+            root.optJSONArray(
+                "choices"
+            )
+                ?: throw IOException(
+                    "API لم يُرجع choices.\n" +
+                            "Response: $responseBody"
+                )
+
+        if (choices.length() == 0) {
+            throw IOException(
+                "API أعاد choices فارغة"
+            )
+        }
+
+        val choice =
+            choices.optJSONObject(0)
+                ?: throw IOException(
+                    "API أعاد choice غير صالح"
+                )
+
+        val message =
+            choice.optJSONObject(
+                "message"
+            )
+                ?: throw IOException(
+                    "API أعاد message غير موجود"
+                )
+
+        return message
+            .optString(
+                "content",
+                ""
+            )
+            .trim()
+            .ifBlank {
+                throw IOException(
+                    "API أعاد content فارغًا"
+                )
+            }
+    }
+
+    // -------------------------------------------------------------------------
+    // تجهيز الصورة
+    // -------------------------------------------------------------------------
 
     private fun prepareImage(
         uri: Uri
     ): PreparedImage {
 
         val inputStream =
-            context.contentResolver
-                .openInputStream(uri)
-                ?: throw IllegalStateException(
-                    "Cannot open file"
+            context.contentResolver.openInputStream(uri)
+                ?: throw IOException(
+                    "تعذر فتح الصورة: $uri"
                 )
 
-        val boundsOptions =
-            BitmapFactory.Options().apply {
-                inJustDecodeBounds = true
+        val originalBitmap =
+            inputStream.use {
+                BitmapFactory.decodeStream(it)
             }
-
-        BitmapFactory.decodeStream(
-            inputStream,
-            null,
-            boundsOptions
-        )
-
-        inputStream.close()
-
-        if (
-            boundsOptions.outWidth <= 0 ||
-            boundsOptions.outHeight <= 0
-        ) {
-
-            throw IllegalStateException(
-                "Invalid image dimensions"
-            )
-        }
-
-        val sampleSize =
-            calculateSampleSize(
-                boundsOptions.outWidth,
-                boundsOptions.outHeight,
-                2048
-            )
-
-        val decodeOptions =
-            BitmapFactory.Options().apply {
-                inSampleSize = sampleSize
-            }
-
-        val stream2 =
-            context.contentResolver
-                .openInputStream(uri)
-                ?: throw IllegalStateException(
-                    "Cannot reopen image"
+                ?: throw IOException(
+                    "تعذر قراءة الصورة: $uri"
                 )
+
+        val width =
+            originalBitmap.width
+
+        val height =
+            originalBitmap.height
+
+        val largestDimension =
+            max(
+                width,
+                height
+            )
 
         val bitmap =
-            BitmapFactory.decodeStream(
-                stream2,
-                null,
-                decodeOptions
-            )
+            if (
+                largestDimension >
+                MAX_IMAGE_DIMENSION
+            ) {
 
-        stream2.close()
+                val scale =
+                    MAX_IMAGE_DIMENSION.toFloat() /
+                            largestDimension.toFloat()
 
-        bitmap
-            ?: throw IllegalStateException(
-                "Cannot decode image"
-            )
+                val newWidth =
+                    (width * scale)
+                        .toInt()
+                        .coerceAtLeast(1)
 
-        val outputStream =
-            ByteArrayOutputStream()
+                val newHeight =
+                    (height * scale)
+                        .toInt()
+                        .coerceAtLeast(1)
 
-        try {
-
-            val compressed =
-                bitmap.compress(
-                    Bitmap.CompressFormat.JPEG,
-                    85,
-                    outputStream
+                Bitmap.createScaledBitmap(
+                    originalBitmap,
+                    newWidth,
+                    newHeight,
+                    true
                 )
 
-            if (!compressed) {
-
-                throw IllegalStateException(
-                    "Cannot compress image"
-                )
+            } else {
+                originalBitmap
             }
 
-        } finally {
+        val output =
+            ByteArrayOutputStream()
 
+        bitmap.compress(
+            Bitmap.CompressFormat.JPEG,
+            JPEG_QUALITY,
+            output
+        )
+
+        /*
+         * إذا أنشأنا Bitmap جديدًا، نحرر النسخة الأصلية.
+         */
+        if (bitmap !== originalBitmap) {
             bitmap.recycle()
+            originalBitmap.recycle()
         }
 
         val bytes =
-            outputStream.toByteArray()
+            output.toByteArray()
 
         if (bytes.isEmpty()) {
-
-            throw IllegalStateException(
-                "Image compression produced empty data"
+            throw IOException(
+                "فشل ضغط الصورة"
             )
         }
 
+        val base64 =
+            android.util.Base64.encodeToString(
+                bytes,
+                android.util.Base64.NO_WRAP
+            )
+
         return PreparedImage(
-            base64 =
-                Base64.encodeToString(
-                    bytes,
-                    Base64.NO_WRAP
-                ),
+            base64 = base64,
             mimeType = "image/jpeg"
         )
     }
 
-    private fun calculateSampleSize(
-        width: Int,
-        height: Int,
-        maxSize: Int
-    ): Int {
+    // -------------------------------------------------------------------------
+    // تحليل JSON الناتج
+    // -------------------------------------------------------------------------
 
-        var sampleSize = 1
+    private fun parseBatchResponse(
+        response: String,
+        fileNames: List<String>
+    ): List<ExtractionResult> {
 
-        while (
-            width / sampleSize > maxSize ||
-            height / sampleSize > maxSize
-        ) {
+        val json =
+            extractJson(response)
 
-            sampleSize *= 2
+        val root =
+            JsonParser.parseString(json)
+
+        /*
+         * الحالة المثالية:
+         *
+         * [
+         *   {
+         *      "image_index": 1,
+         *      ...
+         *   },
+         *   {
+         *      "image_index": 2,
+         *      ...
+         *   }
+         * ]
+         */
+        if (root.isJsonArray) {
+
+            val array =
+                root.asJsonArray
+
+            return array.mapIndexed { index, element ->
+
+                jsonElementToResult(
+                    element = element,
+                    fileName =
+                        fileNames.getOrNull(index)
+                            .orEmpty()
+                )
+            }
         }
 
-        return sampleSize
+        /*
+         * بعض النماذج قد تعيد:
+         *
+         * {
+         *   "results": [...]
+         * }
+         */
+        if (root.isJsonObject) {
+
+            val obj =
+                root.asJsonObject
+
+            val possibleKeys =
+                listOf(
+                    "results",
+                    "documents",
+                    "items",
+                    "data"
+                )
+
+            for (key in possibleKeys) {
+
+                val element =
+                    obj.get(key)
+
+                if (
+                    element != null &&
+                    element.isJsonArray
+                ) {
+
+                    return element
+                        .asJsonArray
+                        .mapIndexed { index, item ->
+
+                            jsonElementToResult(
+                                element = item,
+                                fileName =
+                                    fileNames
+                                        .getOrNull(index)
+                                        .orEmpty()
+                            )
+                        }
+                }
+            }
+
+            /*
+             * إذا كان هناك كائن واحد فقط،
+             * نعتبره نتيجة صورة واحدة.
+             */
+            return listOf(
+                jsonElementToResult(
+                    element = root,
+                    fileName =
+                        fileNames
+                            .firstOrNull()
+                            .orEmpty()
+                )
+            )
+        }
+
+        throw IOException(
+            "صيغة JSON غير مدعومة"
+        )
     }
 
-    /*
-     * ============================================================
-     * اسم الملف
-     * ============================================================
-     */
+    // -------------------------------------------------------------------------
+    // تحويل عنصر JSON إلى ExtractionResult
+    // -------------------------------------------------------------------------
+
+    private fun jsonElementToResult(
+        element: JsonElement,
+        fileName: String
+    ): ExtractionResult {
+
+        if (!element.isJsonObject) {
+
+            return ExtractionResult(
+                fileName = fileName,
+                status = "error",
+                errorMessage =
+                    "عنصر النتيجة ليس JSON Object"
+            )
+        }
+
+        val obj =
+            element.asJsonObject
+
+        val values =
+            linkedMapOf<String, String>()
+
+        /*
+         * image_index ليس حقل استخراج.
+         */
+        val ignoredKeys =
+            setOf(
+                "image_index",
+                "imageIndex",
+                "index"
+            )
+
+        for ((key, value) in obj.entrySet()) {
+
+            if (key in ignoredKeys) {
+                continue
+            }
+
+            values[key] =
+                when {
+
+                    value.isJsonNull -> {
+                        ""
+                    }
+
+                    value.isJsonPrimitive -> {
+                        value.asJsonPrimitive
+                            .toString()
+                            .removeSurrounding("\"")
+                    }
+
+                    else -> {
+                        value.toString()
+                    }
+                }
+        }
+
+        return ExtractionResult(
+            fileName = fileName,
+            values = values,
+            status = "success",
+            errorMessage = ""
+        )
+    }
+
+    // -------------------------------------------------------------------------
+    // استخراج JSON من استجابة النموذج
+    // -------------------------------------------------------------------------
+
+    private fun extractJson(
+        response: String
+    ): String {
+
+        var text =
+            response.trim()
+
+        /*
+         * إزالة Markdown fences:
+         *
+         * ```json
+         * [...]
+         * ```
+         */
+        if (text.startsWith("```")) {
+
+            text =
+                text
+                    .removePrefix("```json")
+                    .removePrefix("```JSON")
+                    .removePrefix("```")
+                    .trim()
+
+            if (text.endsWith("```")) {
+                text =
+                    text
+                        .removeSuffix("```")
+                        .trim()
+            }
+        }
+
+        /*
+         * البحث عن أول JSON Array.
+         */
+        val arrayStart =
+            text.indexOf("[")
+
+        val arrayEnd =
+            text.lastIndexOf("]")
+
+        if (
+            arrayStart >= 0 &&
+            arrayEnd > arrayStart
+        ) {
+
+            return text.substring(
+                arrayStart,
+                arrayEnd + 1
+            )
+        }
+
+        /*
+         * البحث عن JSON Object.
+         */
+        val objectStart =
+            text.indexOf("{")
+
+        val objectEnd =
+            text.lastIndexOf("}")
+
+        if (
+            objectStart >= 0 &&
+            objectEnd > objectStart
+        ) {
+
+            return text.substring(
+                objectStart,
+                objectEnd + 1
+            )
+        }
+
+        throw IOException(
+            "لم يتم العثور على JSON صالح في الاستجابة:\n$text"
+        )
+    }
+
+    // -------------------------------------------------------------------------
+    // اسم الملف
+    // -------------------------------------------------------------------------
 
     private fun getFileName(
-        uri: Uri,
-        index: Int
+        uri: Uri
     ): String {
 
         var name: String? = null
 
-        if (
-            uri.scheme == "content"
-        ) {
+        val cursor: Cursor? =
+            try {
 
-            val cursor: Cursor? =
                 context.contentResolver.query(
                     uri,
                     arrayOf(
@@ -1431,586 +1377,82 @@ class DocumentRepository(
                     null
                 )
 
-            cursor?.use {
+            } catch (_: Exception) {
+                null
+            }
 
-                if (it.moveToFirst()) {
+        cursor?.use {
 
-                    val column =
-                        it.getColumnIndex(
-                            OpenableColumns.DISPLAY_NAME
-                        )
+            if (it.moveToFirst()) {
 
-                    if (column >= 0) {
+                val index =
+                    it.getColumnIndex(
+                        OpenableColumns.DISPLAY_NAME
+                    )
 
-                        name =
-                            it.getString(
-                                column
-                            )
-                    }
+                if (index >= 0) {
+                    name =
+                        it.getString(index)
                 }
             }
-        }
-
-        if (name.isNullOrBlank()) {
-            name =
-                uri.lastPathSegment
         }
 
         return name
-            ?.takeIf {
-                it.isNotBlank()
-            }
-            ?: "document_${index + 1}"
+            ?.takeIf { it.isNotBlank() }
+            ?: uri.lastPathSegment
+            ?: "document"
     }
 
-    /*
-     * ============================================================
-     * تحليل JSON
-     * ============================================================
-     */
-
-    private fun parseBatchResponse(
-        content: String,
-        fileNames: List<String>
-    ): List<ExtractionResult> {
-
-        val cleaned =
-            extractJson(content)
-
-        return try {
-
-            val root =
-                JsonParser.parseString(
-                    cleaned
-                )
-
-            val elements =
-                when {
-
-                    root.isJsonArray -> {
-
-                        root.asJsonArray
-                            .toList()
-                    }
-
-                    root.isJsonObject -> {
-
-                        val obj =
-                            root.asJsonObject
-
-                        val possibleKeys =
-                            listOf(
-                                "results",
-                                "documents",
-                                "items",
-                                "data"
-                            )
-
-                        var found:
-                            List<JsonElement>? = null
-
-                        for (key in possibleKeys) {
-
-                            val candidate =
-                                obj.get(key)
-
-                            if (
-                                candidate != null &&
-                                candidate.isJsonArray
-                            ) {
-
-                                found =
-                                    candidate
-                                        .asJsonArray
-                                        .toList()
-
-                                break
-                            }
-                        }
-
-                        found
-                            ?: listOf(root)
-                    }
-
-                    else ->
-                        emptyList()
-                }
-
-            elements.mapIndexedNotNull {
-                index,
-                element ->
-
-                if (
-                    !element.isJsonObject
-                ) {
-                    return@mapIndexedNotNull null
-                }
-
-                val obj =
-                    element.asJsonObject
-
-                val values =
-                    mutableMapOf<String, String>()
-
-                obj.entrySet()
-                    .forEach { entry ->
-
-                        if (
-                            entry.key ==
-                                "image_index" ||
-                            entry.key ==
-                                "imageIndex" ||
-                            entry.key ==
-                                "index"
-                        ) {
-
-                            return@forEach
-                        }
-
-                        values[entry.key] =
-                            jsonElementToString(
-                                entry.value
-                            )
-                    }
-
-                val fileName =
-                    fileNames.getOrNull(index)
-                        ?: "document_${index + 1}"
-
-                ExtractionResult(
-                    fileName = fileName,
-                    values = values,
-                    status = "success"
-                )
-            }
-
-        } catch (e: Exception) {
-
-            throw Exception(
-                "JSON parse error: " +
-                    (
-                        e.message
-                            ?: e.javaClass.simpleName
-                    )
-            )
-        }
-    }
-
-    private fun jsonElementToString(
-        element: JsonElement
-    ): String {
-
-        return when {
-
-            element.isJsonNull ->
-                ""
-
-            element.isJsonPrimitive -> {
-
-                val primitive =
-                    element.asJsonPrimitive
-
-                when {
-
-                    primitive.isString ->
-                        primitive.asString
-
-                    primitive.isBoolean ->
-                        primitive.asBoolean
-                            .toString()
-
-                    primitive.isNumber ->
-                        primitive.asNumber
-                            .toString()
-
-                    else ->
-                        primitive.toString()
-                }
-            }
-
-            element.isJsonArray -> {
-
-                element.asJsonArray
-                    .joinToString(" | ") {
-                        jsonElementToString(it)
-                    }
-            }
-
-            element.isJsonObject -> {
-
-                element.asJsonObject
-                    .entrySet()
-                    .joinToString(", ") {
-                        entry ->
-
-                        "${entry.key}: ${
-                            jsonElementToString(
-                                entry.value
-                            )
-                        }"
-                    }
-            }
-
-            else ->
-                element.toString()
-        }
-    }
-
-    /*
-     * ============================================================
-     * استخراج JSON من النص
-     * ============================================================
-     */
-
-    private fun extractJson(
-        raw: String
-    ): String {
-
-        var text =
-            raw.trim()
-
-        /*
-         * إزالة Markdown code fences.
-         */
-        if (
-            text.contains("```")
-        ) {
-
-            val start =
-                text.indexOf("```")
-
-            var afterStart =
-                start + 3
-
-            if (
-                afterStart < text.length &&
-                text[afterStart] != '\n'
-            ) {
-
-                val newline =
-                    text.indexOf(
-                        '\n',
-                        afterStart
-                    )
-
-                if (newline != -1) {
-
-                    afterStart =
-                        newline + 1
-                }
-            }
-
-            val end =
-                text.indexOf(
-                    "```",
-                    afterStart
-                )
-
-            text =
-                if (end != -1) {
-
-                    text.substring(
-                        afterStart,
-                        end
-                    ).trim()
-
-                } else {
-
-                    text.substring(
-                        afterStart
-                    ).trim()
-                }
-        }
-
-        /*
-         * البحث عن JSON Array.
-         */
-        val firstBracket =
-            text.indexOf('[')
-
-        val lastBracket =
-            text.lastIndexOf(']')
-
-        if (
-            firstBracket != -1 &&
-            lastBracket > firstBracket
-        ) {
-
-            return text.substring(
-                firstBracket,
-                lastBracket + 1
-            ).trim()
-        }
-
-        /*
-         * البحث عن JSON Object.
-         */
-        val firstBrace =
-            text.indexOf('{')
-
-        val lastBrace =
-            text.lastIndexOf('}')
-
-        if (
-            firstBrace != -1 &&
-            lastBrace > firstBrace
-        ) {
-
-            return text.substring(
-                firstBrace,
-                lastBrace + 1
-            ).trim()
-        }
-
-        throw Exception(
-            "No valid JSON found in AI response"
-        )
-    }
-
-    /*
-     * ============================================================
-     * تشخيص أخطاء HTTP
-     * ============================================================
-     *
-     * هذه الدالة مهمة جدًا.
-     *
-     * لا تسمح بظهور:
-     *
-     * null
-     *
-     * فقط.
-     */
+    // -------------------------------------------------------------------------
+    // تشخيص الأخطاء
+    // -------------------------------------------------------------------------
 
     private fun getErrorMessage(
-        conn: HttpURLConnection
+        throwable: Throwable
     ): String {
 
-        return try {
+        val messages =
+            mutableListOf<String>()
 
-            val responseCode =
-                conn.responseCode
+        var current: Throwable? =
+            throwable
 
-            val responseMessage =
-                conn.responseMessage
-                    ?: "No response message"
+        while (current != null) {
 
-            val errorStream =
-                conn.errorStream
+            val message =
+                current.message
+                    ?.trim()
+                    .orEmpty()
 
-            if (errorStream == null) {
-
-                return buildString {
-
-                    append(
-                        "HTTP "
-                    )
-
-                    append(
-                        responseCode
-                    )
-
-                    append(
-                        ": "
-                    )
-
-                    append(
-                        responseMessage
-                    )
-
-                    append(
-                        " - No error body returned by server"
-                    )
-                }
-            }
-
-            val errorText =
-                try {
-
-                    errorStream
-                        .bufferedReader(
-                            Charsets.UTF_8
-                        )
-                        .use {
-                            it.readText()
-                        }
-
-                } catch (e: Exception) {
-
-                    "Unable to read error body: " +
-                        (
-                            e.message
-                                ?: e.javaClass.simpleName
-                        )
-                }
-
-            if (
-                errorText.isBlank()
-            ) {
-
-                return buildString {
-
-                    append(
-                        "HTTP "
-                    )
-
-                    append(
-                        responseCode
-                    )
-
-                    append(
-                        ": "
-                    )
-
-                    append(
-                        responseMessage
-                    )
-
-                    append(
-                        " - Empty error body"
-                    )
-                }
-            }
-
-            /*
-             * محاولة تحليل خطأ Google كـ JSON.
-             */
-            try {
-
-                val json =
-                    JSONObject(
-                        errorText
-                    )
-
-                val error =
-                    json.optJSONObject(
-                        "error"
-                    )
-
-                if (error != null) {
-
-                    val message =
-                        error
-                            .optString(
-                                "message",
-                                ""
-                            )
-                            .trim()
-
-                    val status =
-                        error
-                            .optString(
-                                "status",
-                                ""
-                            )
-                            .trim()
-
-                    val code =
-                        if (
-                            error.has("code")
-                        ) {
-                            error.optInt(
-                                "code",
-                                responseCode
-                            )
-                        } else {
-                            responseCode
-                        }
-
-                    return buildString {
-
-                        append(
-                            "HTTP "
-                        )
-
-                        append(
-                            code
-                        )
-
-                        if (
-                            status.isNotBlank()
-                        ) {
-
-                            append(
-                                " "
-                            )
-
-                            append(
-                                status
-                            )
-                        }
-
-                        append(
-                            ": "
-                        )
-
-                        if (
-                            message.isNotBlank()
-                        ) {
-
-                            append(
-                                message
-                            )
-
-                        } else {
-
-                            append(
-                                errorText.take(
-                                    1000
-                                )
-                            )
-                        }
-                    }
-                }
-
-            } catch (_: Exception) {
-                /*
-                 * الاستجابة ليست JSON.
-                 * سنعرض النص الخام.
-                 */
-            }
-
-            buildString {
-
-                append(
-                    "HTTP "
-                )
-
-                append(
-                    responseCode
-                )
-
-                append(
-                    ": "
-                )
-
-                append(
-                    responseMessage
-                )
-
-                append(
-                    " - "
-                )
-
-                append(
-                    errorText.take(1000)
+            if (message.isNotBlank()) {
+                messages.add(
+                    "${current.javaClass.simpleName}: $message"
                 )
             }
 
-        } catch (e: Exception) {
+            current =
+                current.cause
+        }
 
-            "HTTP error: " +
-                (
-                    e.message
-                        ?: e.javaClass.simpleName
+        return if (messages.isNotEmpty()) {
+
+            messages
+                .distinct()
+                .joinToString(
+                    separator = "\n"
                 )
+
+        } else {
+
+            throwable
+                .javaClass
+                .simpleName
         }
     }
 
-    /*
-     * ============================================================
-     * Data classes
-     * ============================================================
-     */
+    // -------------------------------------------------------------------------
+    // Data Classes
+    // -------------------------------------------------------------------------
 
     private data class PreparedImage(
         val base64: String,
