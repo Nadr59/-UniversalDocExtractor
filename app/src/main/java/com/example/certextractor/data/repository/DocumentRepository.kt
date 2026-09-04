@@ -64,18 +64,27 @@ class DocumentRepository(
          * مثال:
          *
          * 200 صورة
-         *
+         * ↓
          * 3 + 3 + 3 + ... + 2
          *
-         * وكل صورة تنتج نتيجة مستقلة.
+         * كل صورة تنتج نتيجة مستقلة.
          */
-        private const val GEMINI_BATCH_SIZE = 3        /*
-         * إعادة المحاولة للأخطاء المؤقتة من الخادم.
+        private const val GEMINI_BATCH_SIZE = 3
+
+        /*
+         * إعادة المحاولة للأخطاء المؤقتة فقط.
          *
          * المحاولة الأولى: مباشرة
          * الثانية: بعد 2 ثانية
          * الثالثة: بعد 5 ثوانٍ
          * الرابعة: بعد 10 ثوانٍ
+         *
+         * مهم:
+         *
+         * 429 لا يدخل هنا.
+         *
+         * لأن 429 قد يكون بسبب حصة يومية مستنفدة،
+         * وإعادة المحاولة في هذه الحالة تستهلك الطلبات بلا فائدة.
          */
         private const val MAX_RETRY_ATTEMPTS = 4
 
@@ -90,12 +99,6 @@ class DocumentRepository(
 
     /*
      * إعدادات الذكاء الاصطناعي.
-     *
-     * DocumentViewModel يعتمد على:
-     *
-     * repository.settings
-     *
-     * لذلك يجب أن تكون هذه الخاصية public.
      */
     val settings: AiSettings by lazy {
         AiSettings(context)
@@ -152,11 +155,20 @@ class DocumentRepository(
                         )
                     }
 
+                /*
+                 * نستخدم نفس نظام Retry الآمن للصورة المفردة.
+                 *
+                 * 503/500/502/504/Timeout:
+                 * Retry محدود.
+                 *
+                 * 429:
+                 * توقف فوري.
+                 */
                 val response =
-                  callVisionApi(
-                  prompt = prompt,
-                  images = listOf(image)
-                 )
+                    callVisionApiWithRetry(
+                        prompt = prompt,
+                        images = listOf(image)
+                    )
 
                 val results =
                     parseBatchResponse(
@@ -199,19 +211,6 @@ class DocumentRepository(
         ) -> Unit = { _, _, _ -> }
     ): List<ExtractionResult> {
 
-        /*
-         * مهم جدًا:
-         *
-         * يتم استدعاء processBatch من ViewModel.
-         *
-         * لذلك نضع العملية كاملة داخل Dispatchers.IO.
-         *
-         * هذا يمنع:
-         *
-         * NetworkOnMainThreadException
-         *
-         * ويضمن أن قراءة الصور وطلبات HTTP لا تعمل على Main Thread.
-         */
         return withContext(Dispatchers.IO) {
 
             if (uris.isEmpty()) {
@@ -245,16 +244,94 @@ class DocumentRepository(
 
             for (batch in batches) {
 
-                val batchResults =
-                    processBatchWithFallback(
-                        batch = batch,
-                        fields = fields,
-                        freeTextPrompt = freeTextPrompt,
-                        useFreeText = isFreeTextMode
-                    )
+                val batchResults: List<IndexedResult>
+
+                try {
+
+                    batchResults =
+                        processBatchWithFallback(
+                            batch = batch,
+                            fields = fields,
+                            freeTextPrompt = freeTextPrompt,
+                            useFreeText = isFreeTextMode
+                        )
+
+                } catch (e: DailyQuotaExceededException) {
+
+                    /*
+                     * الحصة اليومية انتهت.
+                     *
+                     * مهم جدًا:
+                     *
+                     * لا نعيد إرسال الدفعة.
+                     * لا نقسمها.
+                     * لا نعمل Retry.
+                     *
+                     * نسجل الصور المتبقية كـ failed
+                     * برسالة واضحة ثم نتوقف.
+                     */
+
+                    for (document in batch) {
+
+                        processedCount++
+
+                        val errorResult =
+                            ExtractionResult(
+                                fileName = document.fileName,
+                                status = "error",
+                                errorMessage =
+                                    getErrorMessage(e)
+                            )
+
+                        val indexedResult =
+                            IndexedResult(
+                                index = document.index,
+                                result = errorResult
+                            )
+
+                        allResults.add(
+                            indexedResult
+                        )
+
+                        onProgress(
+                            processedCount,
+                            total,
+                            errorResult
+                        )
+                    }
+
+                    /*
+                     * لا توجد فائدة من معالجة الدفعات التالية
+                     * لأن الحصة اليومية مستنفدة.
+                     */
+                    break
+
+                } catch (e: Exception) {
+
+                    /*
+                     * أي خطأ غير متعلق بالحصة يتم تسجيله
+                     * كخطأ للدفعة الحالية بدل إسقاط التطبيق.
+                     *
+                     * هذا المسار احتياطي.
+                     */
+                    batchResults =
+                        batch.map { document ->
+
+                            IndexedResult(
+                                index = document.index,
+                                result =
+                                    ExtractionResult(
+                                        fileName = document.fileName,
+                                        status = "error",
+                                        errorMessage =
+                                            getErrorMessage(e)
+                                    )
+                            )
+                        }
+                }
 
                 /*
-                 * نضيف النتائج بالترتيب.
+                 * إذا وصلنا هنا طبيعيًا، نضيف النتائج.
                  */
                 allResults.addAll(
                     batchResults
@@ -262,13 +339,6 @@ class DocumentRepository(
 
                 /*
                  * إرسال نتيجة كل صورة إلى ViewModel.
-                 *
-                 * هذا مهم لأن DocumentViewModel الحالي
-                 * ينتظر:
-                 *
-                 * current
-                 * total
-                 * result
                  */
                 for (indexedResult in batchResults) {
 
@@ -282,8 +352,10 @@ class DocumentRepository(
                 }
 
                 /*
-                 * إذا كان هناك المزيد من الصور،
-                 * ننتظر ثانية واحدة بين الدفعات.
+                 * انتظار بسيط بين الدفعات.
+                 *
+                 * هذا لا يعالج الحصة اليومية،
+                 * لكنه يقلل الضغط المتتابع على API.
                  */
                 if (processedCount < total) {
                     delay(1000L)
@@ -342,11 +414,14 @@ class DocumentRepository(
                     )
                 }
 
+            /*
+             * الاتصال مع Retry آمن.
+             */
             val response =
-              callVisionApiWithRetry(
-              prompt = prompt,
-              images = images
-              )
+                callVisionApiWithRetry(
+                    prompt = prompt,
+                    images = images
+                )
 
             val fileNames =
                 batch.map {
@@ -379,23 +454,35 @@ class DocumentRepository(
                 )
             }
 
+        } catch (e: DailyQuotaExceededException) {
+
+            /*
+             * مهم جدًا:
+             *
+             * لا نعمل Fallback عند انتهاء الحصة.
+             *
+             * لو كانت الدفعة 3 صور:
+             *
+             * ❌ لا نحولها إلى 1 + 2
+             * ❌ لا نحولها إلى 1 + 1 + 1
+             * ❌ لا نعيد الطلب
+             *
+             * نعيد الاستثناء مباشرة إلى processBatch
+             * لكي يتوقف التنفيذ.
+             */
+            throw e
+
         } catch (e: Exception) {
 
             /*
              * إذا فشلت دفعة من أكثر من صورة،
-             * نقسمها إلى نصفين.
+             * نحاول تقسيمها.
              *
-             * مثال:
+             * هذا مفيد للأخطاء المتعلقة بصورة معينة
+             * أو باستجابة غير صالحة.
              *
-             * 3
-             * ↓
-             * 1 + 2
-             *
-             * وإذا فشلت 2:
-             *
-             * 1 + 1
-             *
-             * وهكذا لا تضيع جميع الصور بسبب صورة واحدة.
+             * لكن أخطاء 429 لا تصل هنا كأخطاء قابلة لإعادة
+             * المحاولة لأنها مستبعدة في callVisionApiWithRetry.
              */
             if (batch.size > 1) {
 
@@ -436,8 +523,6 @@ class DocumentRepository(
 
                 /*
                  * وصلت المشكلة إلى صورة واحدة.
-                 *
-                 * نسجل الخطأ بدل إسقاط الصورة.
                  */
                 val document =
                     batch.first()
@@ -457,147 +542,213 @@ class DocumentRepository(
             }
         }
     }
-  // =========================================================================
-// إعادة المحاولة للأخطاء المؤقتة
-// =========================================================================
 
-private suspend fun callVisionApiWithRetry(
-    prompt: String,
-    images: List<PreparedImage>
-): String {
+    // =========================================================================
+    // إعادة المحاولة للأخطاء المؤقتة فقط
+    // =========================================================================
 
-    var lastError: Exception? = null
+    private suspend fun callVisionApiWithRetry(
+        prompt: String,
+        images: List<PreparedImage>
+    ): String {
 
-    for (attempt in 0 until MAX_RETRY_ATTEMPTS) {
+        var lastError: Exception? = null
 
-        try {
+        for (attempt in 0 until MAX_RETRY_ATTEMPTS) {
 
-            /*
-             * الانتظار قبل المحاولة.
-             *
-             * المحاولة الأولى = 0 ثانية
-             * الثانية = 2 ثانية
-             * الثالثة = 5 ثوانٍ
-             * الرابعة = 10 ثوانٍ
-             */
-            val delayMs =
-                RETRY_DELAYS_MS
-                    .getOrElse(attempt) {
-                        10000L
-                    }
+            try {
 
-            if (delayMs > 0L) {
-                delay(delayMs)
-            }
+                /*
+                 * الانتظار قبل المحاولة.
+                 */
+                val delayMs =
+                    RETRY_DELAYS_MS
+                        .getOrElse(attempt) {
+                            10000L
+                        }
 
-            return callVisionApi(
-                prompt = prompt,
-                images = images
-            )
+                if (delayMs > 0L) {
+                    delay(delayMs)
+                }
 
-        } catch (e: Exception) {
+                return callVisionApi(
+                    prompt = prompt,
+                    images = images
+                )
 
-            lastError = e
+            } catch (e: DailyQuotaExceededException) {
 
-            /*
-             * إذا لم يكن الخطأ من الأخطاء المؤقتة،
-             * لا داعي لإعادة المحاولة.
-             */
-            if (!isRetryableError(e)) {
+                /*
+                 * الحصة اليومية:
+                 *
+                 * توقف فورًا.
+                 */
                 throw e
+
+            } catch (e: Exception) {
+
+                lastError = e
+
+                /*
+                 * لا نعيد المحاولة إلا للأخطاء المؤقتة.
+                 */
+                if (!isRetryableError(e)) {
+                    throw e
+                }
+
+                /*
+                 * آخر محاولة.
+                 */
+                if (
+                    attempt ==
+                    MAX_RETRY_ATTEMPTS - 1
+                ) {
+                    break
+                }
             }
+        }
+
+        throw IOException(
+            "فشلت جميع محاولات الاتصال بالذكاء الاصطناعي: " +
+                    getErrorMessage(
+                        lastError
+                            ?: IOException("خطأ غير معروف")
+                    ),
+            lastError
+        )
+    }
+
+    // =========================================================================
+    // تحديد الأخطاء التي تستحق إعادة المحاولة
+    // =========================================================================
+
+    private fun isRetryableError(
+        throwable: Throwable
+    ): Boolean {
+
+        /*
+         * لا نعيد المحاولة مطلقًا إذا كان الخطأ
+         * متعلقًا بالحصة اليومية.
+         */
+        if (containsDailyQuotaError(throwable)) {
+            return false
+        }
+
+        var current: Throwable? =
+            throwable
+
+        while (current != null) {
+
+            val message =
+                current.message
+                    ?.lowercase()
+                    .orEmpty()
 
             /*
-             * إذا كانت هذه آخر محاولة،
-             * نخرج بالخطأ ليعمل fallback الموجود
-             * أصلًا في processBatchWithFallback.
+             * أخطاء الخادم المؤقتة فقط.
+             *
+             * 500 Internal Server Error
+             * 502 Bad Gateway
+             * 503 Service Unavailable
+             * 504 Gateway Timeout
              */
             if (
-                attempt ==
-                MAX_RETRY_ATTEMPTS - 1
+                message.contains("http 500") ||
+                message.contains("http 502") ||
+                message.contains("http 503") ||
+                message.contains("http 504")
             ) {
-                break
+                return true
             }
+
+            if (
+                message.contains("internal server error") ||
+                message.contains("bad gateway") ||
+                message.contains("service unavailable") ||
+                message.contains("gateway timeout") ||
+                message.contains("temporarily unavailable")
+            ) {
+                return true
+            }
+
+            /*
+             * Timeout الشبكة.
+             */
+            if (
+                current is SocketTimeoutException
+            ) {
+                return true
+            }
+
+            current =
+                current.cause
         }
-    }
-
-    throw IOException(
-        "فشلت جميع محاولات الاتصال بالذكاء الاصطناعي: " +
-                getErrorMessage(
-                    lastError
-                        ?: IOException("خطأ غير معروف")
-                ),
-        lastError
-    )
-}
-
-
-// =========================================================================
-// تحديد الأخطاء التي تستحق إعادة المحاولة
-// =========================================================================
-
-private fun isRetryableError(
-    throwable: Throwable
-): Boolean {
-
-    var current: Throwable? =
-        throwable
-
-    while (current != null) {
-
-        val message =
-            current.message
-                ?.lowercase()
-                .orEmpty()
 
         /*
-         * أخطاء HTTP المؤقتة:
+         * 429 غير قابل لإعادة المحاولة تلقائيًا.
          *
-         * 429 = Too Many Requests
-         * 500 = Internal Server Error
-         * 502 = Bad Gateway
-         * 503 = Service Unavailable
-         * 504 = Gateway Timeout
+         * السبب:
+         * قد يكون Rate Limit أو Daily Quota،
+         * وفي كلتا الحالتين التطبيق الحالي
+         * لا يريد استهلاك طلبات إضافية بشكل آلي.
          */
-        if (
-            message.contains("http 429") ||
-            message.contains("http 500") ||
-            message.contains("http 502") ||
-            message.contains("http 503") ||
-            message.contains("http 504")
-        ) {
-            return true
-        }
-
-        /*
-         * بعض الخدمات قد ترسل وصف الخطأ
-         * بدون صيغة HTTP المعتادة.
-         */
-        if (
-            message.contains("too many requests") ||
-            message.contains("service unavailable") ||
-            message.contains("temporarily unavailable") ||
-            message.contains("high demand") ||
-            message.contains("try again later")
-        ) {
-            return true
-        }
-
-        /*
-         * أخطاء Timeout الشبكية.
-         */
-        if (
-            current is SocketTimeoutException
-        ) {
-            return true
-        }
-
-        current =
-            current.cause
+        return false
     }
 
-    return false
-}
+    // =========================================================================
+    // فحص أخطاء الحصة اليومية
+    // =========================================================================
+
+    private fun containsDailyQuotaError(
+        throwable: Throwable
+    ): Boolean {
+
+        var current: Throwable? =
+            throwable
+
+        while (current != null) {
+
+            if (
+                current is DailyQuotaExceededException
+            ) {
+                return true
+            }
+
+            val message =
+                current.message
+                    ?.lowercase()
+                    .orEmpty()
+
+            /*
+             * مؤشرات Google Gemini للحصة اليومية.
+             */
+            if (
+                message.contains(
+                    "generate_content_free_tier_requests"
+                ) ||
+                message.contains(
+                    "perday"
+                ) ||
+                message.contains(
+                    "free tier"
+                ) ||
+                message.contains(
+                    "quotaexceeded"
+                ) ||
+                message.contains(
+                    "resource_exhausted"
+                )
+            ) {
+                return true
+            }
+
+            current =
+                current.cause
+        }
+
+        return false
+    }
+
     // =========================================================================
     // اختيار مزود الذكاء الاصطناعي
     // =========================================================================
@@ -707,11 +858,6 @@ private fun isRetryableError(
             )
         }
 
-        /*
-         * النموذج الموجود في إعدادات التطبيق.
-         *
-         * إذا كان فارغًا نستخدم الافتراضي.
-         */
         val configuredModel =
             settings.geminiModel
                 .trim()
@@ -719,11 +865,6 @@ private fun isRetryableError(
                     DEFAULT_GEMINI_MODEL
                 }
 
-        /*
-         * لا نستخدم نماذج قديمة بشكل إجباري.
-         *
-         * النموذج الذي اختاره المستخدم هو الأولوية.
-         */
         val models =
             linkedSetOf(
                 configuredModel
@@ -758,8 +899,6 @@ private fun isRetryableError(
 
                 /*
                  * الصور.
-                 *
-                 * كل صورة مستقلة.
                  */
                 for (image in images) {
 
@@ -866,6 +1005,49 @@ private fun isRetryableError(
 
                         if (!response.isSuccessful) {
 
+                            /*
+                             * =================================================
+                             * 429
+                             * =================================================
+                             *
+                             * نفحص جسم الاستجابة قبل إنشاء IOException
+                             * حتى نميز Daily Quota عن الأخطاء الأخرى.
+                             */
+                            if (response.code == 429) {
+
+                                if (
+                                    isGeminiDailyQuotaResponse(
+                                        responseBody
+                                    )
+                                ) {
+
+                                    throw DailyQuotaExceededException(
+                                        buildGeminiQuotaMessage(
+                                            model = model,
+                                            responseBody = responseBody
+                                        )
+                                    )
+                                }
+
+                                /*
+                                 * 429 غير يومي:
+                                 *
+                                 * لا نعيد المحاولة تلقائيًا.
+                                 */
+                                throw IOException(
+                                    "Gemini HTTP 429: " +
+                                            "تم رفض الطلب بسبب Rate Limit.\n" +
+                                            "لن تتم إعادة المحاولة تلقائيًا.\n" +
+                                            "Response: $responseBody"
+                                )
+                            }
+
+                            /*
+                             * 500/502/503/504 وغيرها.
+                             *
+                             * نحتفظ برقم HTTP في الرسالة حتى يستطيع
+                             * نظام Retry التعرف عليه.
+                             */
                             throw IOException(
                                 "Gemini HTTP ${response.code}: " +
                                         "${response.message}\n" +
@@ -964,6 +1146,16 @@ private fun isRetryableError(
                         return result
                     }
 
+            } catch (e: DailyQuotaExceededException) {
+
+                /*
+                 * لا نلف الخطأ داخل IOException.
+                 *
+                 * نحتاج أن يصل النوع نفسه إلى processBatch
+                 * حتى يتوقف التطبيق فورًا.
+                 */
+                throw e
+
             } catch (e: SocketTimeoutException) {
 
                 lastError =
@@ -973,6 +1165,19 @@ private fun isRetryableError(
                     )
 
             } catch (e: Exception) {
+
+                /*
+                 * إذا كان السبب الحقيقي Daily Quota
+                 * لا نلفه ونضيعه.
+                 */
+                if (
+                    containsDailyQuotaError(e)
+                ) {
+
+                    throw DailyQuotaExceededException(
+                        getErrorMessage(e)
+                    )
+                }
 
                 lastError = e
             }
@@ -994,6 +1199,143 @@ private fun isRetryableError(
             },
             lastError
         )
+    }
+
+    // =========================================================================
+    // فحص استجابة Gemini الخاصة بالحصة
+    // =========================================================================
+
+    private fun isGeminiDailyQuotaResponse(
+        responseBody: String
+    ): Boolean {
+
+        val body =
+            responseBody.lowercase()
+
+        /*
+         * المؤشر الأقوى:
+         *
+         * generate_content_free_tier_requests
+         */
+        if (
+            body.contains(
+                "generate_content_free_tier_requests"
+            )
+        ) {
+            return true
+        }
+
+        /*
+         * مؤشرات إضافية تستخدمها استجابة Google
+         * عند استنفاد الحصة اليومية.
+         */
+        if (
+            body.contains(
+                "perday"
+            ) &&
+            body.contains(
+                "free"
+            )
+        ) {
+            return true
+        }
+
+        if (
+            body.contains(
+                "quotaValue".lowercase()
+            ) &&
+            body.contains(
+                "free"
+            )
+        ) {
+            return true
+        }
+
+        if (
+            body.contains(
+                "GenerateRequestsPerDayPerModel-FreeTier"
+                    .lowercase()
+            )
+        ) {
+            return true
+        }
+
+        return false
+    }
+
+    // =========================================================================
+    // رسالة الحصة اليومية
+    // =========================================================================
+
+    private fun buildGeminiQuotaMessage(
+        model: String,
+        responseBody: String
+    ): String {
+
+        /*
+         * نحاول استخراج القيمة من:
+         *
+         * "quotaValue": "20"
+         */
+        val quotaValue =
+            Regex(
+                "\"quotaValue\"\\s*:\\s*\"([^\"]+)\""
+            )
+                .find(responseBody)
+                ?.groupValues
+                ?.getOrNull(1)
+
+        /*
+         * نحاول استخراج مدة Retry إن وجدت:
+         *
+         * "retryDelay": "31s"
+         */
+        val retryDelay =
+            Regex(
+                "\"retryDelay\"\\s*:\\s*\"([^\"]+)\""
+            )
+                .find(responseBody)
+                ?.groupValues
+                ?.getOrNull(1)
+
+        return buildString {
+
+            append(
+                "تم استنفاد الحصة اليومية المجانية لـ Gemini."
+            )
+
+            append("\nالنموذج: ")
+            append(model)
+
+            if (!quotaValue.isNullOrBlank()) {
+
+                append("\nحد الحصة: ")
+                append(quotaValue)
+                append(" طلبًا")
+            }
+
+            /*
+             * هذه المدة قد تكون مرتبطة بإعادة المحاولة
+             * وليس بالضرورة موعد إعادة ضبط الحصة اليومية.
+             */
+            if (!retryDelay.isNullOrBlank()) {
+
+                append("\nالخادم يقترح الانتظار: ")
+                append(retryDelay)
+            }
+
+            append(
+                "\n\nتم إيقاف المعالجة تلقائيًا لحماية الحصة."
+            )
+
+            append(
+                "\nلن تتم إعادة إرسال الصور تلقائيًا."
+            )
+
+            append(
+                "\nيمكنك المتابعة بعد تجدد الحصة أو استخدام مزود API آخر."
+            )
+        }
     }
 
     // =========================================================================
@@ -1118,16 +1460,6 @@ private fun isRetryableError(
                     8192
                 )
 
-                /*
-                 * نطلب JSON Object لأن بعض OpenAI-compatible
-                 * APIs لا تقبل Array كجذر عند استخدام response_format.
-                 *
-                 * DynamicPromptBuilder يسمح أيضًا بإرجاع:
-                 *
-                 * {
-                 *   "results": [...]
-                 * }
-                 */
                 put(
                     "response_format",
                     JSONObject().apply {
@@ -1173,6 +1505,18 @@ private fun isRetryableError(
                         .orEmpty()
 
                 if (!response.isSuccessful) {
+
+                    /*
+                     * لا نعيد المحاولة على 429.
+                     */
+                    if (response.code == 429) {
+
+                        throw IOException(
+                            "HTTP 429: تم رفض الطلب بسبب Rate Limit.\n" +
+                                    "لن تتم إعادة المحاولة تلقائيًا.\n" +
+                                    "Response: $responseBody"
+                        )
+                    }
 
                     throw IOException(
                         "HTTP ${response.code}: " +
@@ -1371,8 +1715,8 @@ private fun isRetryableError(
              * تحرير الذاكرة مباشرة بعد تحويل الصورة
              * إلى JPEG/Base64.
              *
-             * هذا مهم خصوصًا عند معالجة مئات الصور
-             * على أجهزة ذات RAM محدودة.
+             * مهم جدًا عند معالجة عشرات أو مئات الصور
+             * على الأجهزة ذات RAM المحدودة.
              */
             if (
                 bitmapToCompress !==
@@ -1449,12 +1793,6 @@ private fun isRetryableError(
          * {
          *   "results": [...]
          * }
-         *
-         * أو:
-         *
-         * {
-         *   "documents": [...]
-         * }
          */
         if (root.isJsonObject) {
 
@@ -1509,10 +1847,6 @@ private fun isRetryableError(
                 )
             }
 
-            /*
-             * إذا كانت عدة صور ولكن النموذج أعاد Object
-             * بدون مصفوفة نتائج، نعتبرها استجابة غير مكتملة.
-             */
             throw IOException(
                 "الاستجابة تحتوي JSON Object " +
                         "لكنها لا تحتوي مصفوفة نتائج مناسبة. " +
@@ -1551,7 +1885,7 @@ private fun isRetryableError(
             linkedMapOf<String, String>()
 
         /*
-         * هذه مفاتيح تقنية وليست حقول استخراج.
+         * مفاتيح تقنية وليست حقول استخراج.
          */
         val ignoredKeys =
             setOf(
@@ -1640,7 +1974,7 @@ private fun isRetryableError(
         }
 
         /*
-         * إذا بدأت الاستجابة بمصفوفة JSON.
+         * البحث عن Array.
          */
         val arrayStart =
             text.indexOf("[")
@@ -1804,4 +2138,12 @@ private fun isRetryableError(
         val index: Int,
         val result: ExtractionResult
     )
+
+    // =========================================================================
+    // استثناء الحصة اليومية
+    // =========================================================================
+
+    private class DailyQuotaExceededException(
+        message: String
+    ) : IOException(message)
 }
