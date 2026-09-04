@@ -1444,52 +1444,54 @@ class DocumentRepository(
     // ============================================================
 
     private fun getFileName(
-        uri: Uri
-    ): String {
+    uri: Uri
+): String {
 
-        return try {
+    val queriedName = try {
 
-            context.contentResolver
-                .query(
-                    uri,
-                    arrayOf(
-                        android.provider.OpenableColumns.DISPLAY_NAME
-                    ),
-                    null,
-                    null,
-                    null
-                )
-                ?.use { cursor ->
+        context.contentResolver
+            .query(
+                uri,
+                arrayOf(
+                    android.provider.OpenableColumns.DISPLAY_NAME
+                ),
+                null,
+                null,
+                null
+            )
+            ?.use { cursor ->
 
-                    if (cursor.moveToFirst()) {
+                if (cursor.moveToFirst()) {
 
-                        val index =
-                            cursor.getColumnIndex(
-                                android.provider.OpenableColumns.DISPLAY_NAME
-                            )
+                    val index =
+                        cursor.getColumnIndex(
+                            android.provider.OpenableColumns.DISPLAY_NAME
+                        )
 
-                        if (index >= 0) {
-                            val name =
-                                cursor.getString(index)
-
-                            if (!name.isNullOrBlank()) {
-                                return name
-                            }
-                        }
+                    if (index >= 0) {
+                        cursor.getString(index)
+                            ?.takeIf { it.isNotBlank() }
+                    } else {
+                        null
                     }
+
+                } else {
+                    null
                 }
+            }
 
-        } catch (_: Exception) {
-        }
+    } catch (_: Exception) {
+        null
+    }
 
-        uri.lastPathSegment
+    return queriedName
+        ?: uri.lastPathSegment
             ?.substringAfterLast("/")
             ?.ifBlank {
                 "document"
             }
-            ?: "document"
+        ?: "document"
     }
-
     // ============================================================
     // تحديد أخطاء إعادة المحاولة
     // ============================================================
