@@ -69,7 +69,23 @@ class DocumentRepository(
          *
          * وكل صورة تنتج نتيجة مستقلة.
          */
-        private const val GEMINI_BATCH_SIZE = 3
+        private const val GEMINI_BATCH_SIZE = 3        /*
+         * إعادة المحاولة للأخطاء المؤقتة من الخادم.
+         *
+         * المحاولة الأولى: مباشرة
+         * الثانية: بعد 2 ثانية
+         * الثالثة: بعد 5 ثوانٍ
+         * الرابعة: بعد 10 ثوانٍ
+         */
+        private const val MAX_RETRY_ATTEMPTS = 4
+
+        private val RETRY_DELAYS_MS =
+            longArrayOf(
+                0L,
+                2000L,
+                5000L,
+                10000L
+            )
     }
 
     /*
@@ -137,10 +153,10 @@ class DocumentRepository(
                     }
 
                 val response =
-                    callVisionApi(
-                        prompt = prompt,
-                        images = listOf(image)
-                    )
+                callVisionApiWithRetry(
+                prompt = prompt,
+                 images = images
+                )
 
                 val results =
                     parseBatchResponse(
@@ -441,7 +457,147 @@ class DocumentRepository(
             }
         }
     }
+  // =========================================================================
+// إعادة المحاولة للأخطاء المؤقتة
+// =========================================================================
 
+private suspend fun callVisionApiWithRetry(
+    prompt: String,
+    images: List<PreparedImage>
+): String {
+
+    var lastError: Exception? = null
+
+    for (attempt in 0 until MAX_RETRY_ATTEMPTS) {
+
+        try {
+
+            /*
+             * الانتظار قبل المحاولة.
+             *
+             * المحاولة الأولى = 0 ثانية
+             * الثانية = 2 ثانية
+             * الثالثة = 5 ثوانٍ
+             * الرابعة = 10 ثوانٍ
+             */
+            val delayMs =
+                RETRY_DELAYS_MS
+                    .getOrElse(attempt) {
+                        10000L
+                    }
+
+            if (delayMs > 0L) {
+                delay(delayMs)
+            }
+
+            return callVisionApi(
+                prompt = prompt,
+                images = images
+            )
+
+        } catch (e: Exception) {
+
+            lastError = e
+
+            /*
+             * إذا لم يكن الخطأ من الأخطاء المؤقتة،
+             * لا داعي لإعادة المحاولة.
+             */
+            if (!isRetryableError(e)) {
+                throw e
+            }
+
+            /*
+             * إذا كانت هذه آخر محاولة،
+             * نخرج بالخطأ ليعمل fallback الموجود
+             * أصلًا في processBatchWithFallback.
+             */
+            if (
+                attempt ==
+                MAX_RETRY_ATTEMPTS - 1
+            ) {
+                break
+            }
+        }
+    }
+
+    throw IOException(
+        "فشلت جميع محاولات الاتصال بالذكاء الاصطناعي: " +
+                getErrorMessage(
+                    lastError
+                        ?: IOException("خطأ غير معروف")
+                ),
+        lastError
+    )
+}
+
+
+// =========================================================================
+// تحديد الأخطاء التي تستحق إعادة المحاولة
+// =========================================================================
+
+private fun isRetryableError(
+    throwable: Throwable
+): Boolean {
+
+    var current: Throwable? =
+        throwable
+
+    while (current != null) {
+
+        val message =
+            current.message
+                ?.lowercase()
+                .orEmpty()
+
+        /*
+         * أخطاء HTTP المؤقتة:
+         *
+         * 429 = Too Many Requests
+         * 500 = Internal Server Error
+         * 502 = Bad Gateway
+         * 503 = Service Unavailable
+         * 504 = Gateway Timeout
+         */
+        if (
+            message.contains("http 429") ||
+            message.contains("http 500") ||
+            message.contains("http 502") ||
+            message.contains("http 503") ||
+            message.contains("http 504")
+        ) {
+            return true
+        }
+
+        /*
+         * بعض الخدمات قد ترسل وصف الخطأ
+         * بدون صيغة HTTP المعتادة.
+         */
+        if (
+            message.contains("too many requests") ||
+            message.contains("service unavailable") ||
+            message.contains("temporarily unavailable") ||
+            message.contains("high demand") ||
+            message.contains("try again later")
+        ) {
+            return true
+        }
+
+        /*
+         * أخطاء Timeout الشبكية.
+         */
+        if (
+            current is SocketTimeoutException
+        ) {
+            return true
+        }
+
+        current =
+            current.cause
+    }
+
+    return false
+}
     // =========================================================================
     // اختيار مزود الذكاء الاصطناعي
     // =========================================================================
