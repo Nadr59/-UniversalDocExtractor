@@ -325,42 +325,84 @@ class DocumentRepository(
                                         status = "error",
                                         errorMessage =
                                             getErrorMessage(e)
-                                    )
-                            )
-                        }
-                }
+        for (batch in batches) {
 
-                /*
-                 * إذا وصلنا هنا طبيعيًا، نضيف النتائج.
-                 */
-                allResults.addAll(
-                    batchResults
+    var batchResults: List<IndexedResult>
+
+    try {
+
+        batchResults =
+            processBatchWithFallback(
+                batch = batch,
+                fields = fields,
+                freeTextPrompt = freeTextPrompt,
+                useFreeText = isFreeTextMode
+            )
+
+    } catch (e: DailyQuotaExceededException) {
+
+        for (document in batch) {
+
+            processedCount++
+
+            val errorResult =
+                ExtractionResult(
+                    fileName = document.fileName,
+                    status = "error",
+                    errorMessage = getErrorMessage(e)
                 )
 
-                /*
-                 * إرسال نتيجة كل صورة إلى ViewModel.
-                 */
-                for (indexedResult in batchResults) {
+            val indexedResult =
+                IndexedResult(
+                    index = document.index,
+                    result = errorResult
+                )
 
-                    processedCount++
+            allResults.add(indexedResult)
 
-                    onProgress(
-                        processedCount,
-                        total,
-                        indexedResult.result
-                    )
-                }
+            onProgress(
+                processedCount,
+                total,
+                errorResult
+            )
+        }
 
-                /*
-                 * انتظار بسيط بين الدفعات.
-                 *
-                 * هذا لا يعالج الحصة اليومية،
-                 * لكنه يقلل الضغط المتتابع على API.
-                 */
-                if (processedCount < total) {
-                    delay(1000L)
-                }
+        break
+
+    } catch (e: Exception) {
+
+        batchResults =
+            batch.map { document ->
+
+                IndexedResult(
+                    index = document.index,
+                    result =
+                        ExtractionResult(
+                            fileName = document.fileName,
+                            status = "error",
+                            errorMessage = getErrorMessage(e)
+                        )
+                )
             }
+    }
+
+    allResults.addAll(batchResults)
+
+    for (indexedResult in batchResults) {
+
+        processedCount++
+
+        onProgress(
+            processedCount,
+            total,
+            indexedResult.result
+        )
+    }
+
+    if (processedCount < total) {
+        delay(1000L)
+    }
+        }
 
             /*
              * ترتيب نهائي حسب ترتيب الصور الأصلية.
