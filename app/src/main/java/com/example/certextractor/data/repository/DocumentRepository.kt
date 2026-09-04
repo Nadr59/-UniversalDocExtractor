@@ -1,1844 +1,569 @@
-package com.example.certextractor.data.repository
+package com.example.certextractor.utils
 
-import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.net.Uri
-import android.util.Base64
-import com.example.certextractor.data.local.AiSettings
 import com.example.certextractor.data.model.ExtractionField
-import com.example.certextractor.data.model.ExtractionResult
-import com.example.certextractor.utils.DynamicPromptBuilder
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.IOException
-import java.net.SocketTimeoutException
-import java.util.concurrent.TimeUnit
 
-class DocumentRepository(
-    private val context: Context
-) {
+object DynamicPromptBuilder {
 
-    val settings: AiSettings by lazy {
-        AiSettings(context)
-    }
+    fun buildFieldsPrompt(fields: List<ExtractionField>): String {
 
-    private val client: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(120, TimeUnit.SECONDS)
-            .readTimeout(180, TimeUnit.SECONDS)
-            .writeTimeout(180, TimeUnit.SECONDS)
-            .build()
-    }
+        val activeFields = fields.filter { it.enabled }
 
-    companion object {
-
-        private const val DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
-
-        /**
-         * عدد الصور في الطلب الواحد.
-         *
-         * كل صورة تمثل وثيقة مستقلة.
-         */
-        private const val GEMINI_BATCH_SIZE = 3
-
-        /**
-         * عدد محاولات إعادة الاتصال للأخطاء المؤقتة فقط.
-         *
-         * مهم:
-         * 429 لا يعاد تلقائيًا لأنه قد يعني تجاوز الحصة اليومية.
-         */
-        private const val MAX_RETRY_ATTEMPTS = 4
-
-        private val RETRY_DELAYS_MS = longArrayOf(
-            0L,
-            2000L,
-            5000L,
-            10000L
-        )
-
-        private const val MAX_IMAGE_DIMENSION = 2048
-        private const val JPEG_QUALITY = 85
-    }
-
-    /**
-     * استثناء خاص بتجاوز الحصة اليومية.
-     *
-     * يتم إيقاف الدفعة الحالية وبقية الدفعات
-     * بدل الاستمرار في إرسال طلبات ستفشل بنفس الخطأ.
-     */
-    private class DailyQuotaExceededException(
-        message: String
-    ) : IOException(message)
-
-    /**
-     * عنصر داخلي يربط نتيجة التحليل بفهرس الصورة الأصلي.
-     */
-    private data class IndexedResult(
-        val index: Int,
-        val fileName: String,
-        val result: ExtractionResult
-    )
-
-    /**
-     * تمثيل داخلي للصورة قبل إرسالها.
-     */
-    private data class PreparedImage(
-        val mimeType: String,
-        val base64: String
-    )
-
-    /**
-     * تمثيل داخلي لمستند.
-     *
-     * الاحتفاظ به هنا حتى لا نعتمد على نموذج خارجي غير ضروري.
-     */
-    private data class DocumentItem(
-        val index: Int,
-        val uri: Uri,
-        val fileName: String
-    )
-
-    // ============================================================
-    // معالجة مستند واحد
-    // ============================================================
-
-    suspend fun processDocument(
-        uri: Uri,
-        fields: List<ExtractionField>,
-        freeTextPrompt: String = "",
-        isFreeTextMode: Boolean = false
-    ): ExtractionResult {
-
-        return withContext(Dispatchers.IO) {
-
-            val fileName = getFileName(uri)
-
-            try {
-
-                val preparedImage = prepareImage(uri)
-
-                val prompt = if (isFreeTextMode) {
-                    DynamicPromptBuilder.buildFreeTextPrompt(
-                        freeTextPrompt
-                    )
-                } else {
-                    DynamicPromptBuilder.buildFieldsPrompt(
-                        fields
-                    )
-                }
-
-                val response = callVisionApiWithRetry(
-                    prompt = prompt,
-                    images = listOf(preparedImage)
-                )
-
-                val parsed = parseBatchResponse(
-                    response = response,
-                    expectedCount = 1
-                )
-
-                if (parsed.isEmpty()) {
-                    throw IOException(
-                        "لم يتم العثور على نتيجة للصورة"
-                    )
-                }
-
-                parsed.first().copy(
-                    fileName = fileName,
-                    status = "success"
-                )
-
-            } catch (e: DailyQuotaExceededException) {
-
-                ExtractionResult(
-                    fileName = fileName,
-                    status = "error",
-                    errorMessage = e.message
-                        ?: "تم تجاوز الحصة اليومية لخدمة الذكاء الاصطناعي."
-                )
-
-            } catch (e: Exception) {
-
-                ExtractionResult(
-                    fileName = fileName,
-                    status = "error",
-                    errorMessage = getErrorMessage(e)
-                )
-            }
-        }
-    }
-
-    // ============================================================
-    // معالجة مجموعة كبيرة من الصور
-    // ============================================================
-
-    suspend fun processBatch(
-        uris: List<Uri>,
-        fields: List<ExtractionField>,
-        freeTextPrompt: String = "",
-        isFreeTextMode: Boolean = false,
-        onProgress: (
-            current: Int,
-            total: Int,
-            result: ExtractionResult
-        ) -> Unit
-    ): List<ExtractionResult> {
-
-        return withContext(Dispatchers.IO) {
-
-            val allResults = mutableListOf<ExtractionResult>()
-
-            if (uris.isEmpty()) {
-                return@withContext emptyList()
-            }
-
-            val documents = uris.mapIndexed { index, uri ->
-                DocumentItem(
-                    index = index,
-                    uri = uri,
-                    fileName = getFileName(uri)
-                )
-            }
-
-            val total = documents.size
-            var processedCount = 0
-
-            val batches = documents.chunked(GEMINI_BATCH_SIZE)
-
-            for (batch in batches) {
-
-                var batchResults: List<IndexedResult>
-
-                try {
-
-                    batchResults = processBatchWithFallback(
-                        batch = batch,
-                        fields = fields,
-                        freeTextPrompt = freeTextPrompt,
-                        isFreeTextMode = isFreeTextMode
-                    )
-
-                } catch (e: DailyQuotaExceededException) {
-
-                    /**
-                     * تجاوز الحصة اليومية:
-                     *
-                     * لا نقوم بتقسيم الدفعة ولا نعيد الطلب.
-                     * نسجل الصور الحالية كفاشلة ونوقف بقية الدفعات.
-                     */
-
-                    for (document in batch) {
-
-                        val errorResult = ExtractionResult(
-                            fileName = document.fileName,
-                            status = "error",
-                            errorMessage = e.message
-                                ?: "تم تجاوز الحصة اليومية لخدمة الذكاء الاصطناعي."
-                        )
-
-                        allResults.add(errorResult)
-
-                        processedCount++
-
-                        onProgress(
-                            processedCount,
-                            total,
-                            errorResult
-                        )
-                    }
-
-                    break
-
-                } catch (e: Exception) {
-
-                    /**
-                     * خطأ عادي في الدفعة.
-                     *
-                     * لا نوقف كامل العملية.
-                     * نسجل كل صورة في الدفعة كفاشلة.
-                     */
-
-                    batchResults = batch.map { document ->
-
-                        IndexedResult(
-                            index = document.index,
-                            fileName = document.fileName,
-                            result = ExtractionResult(
-                                fileName = document.fileName,
-                                status = "error",
-                                errorMessage = getErrorMessage(e)
-                            )
-                        )
-                    }
-                }
-
-                /**
-                 * ترتيب النتائج حسب ترتيب الصور الأصلي.
-                 */
-                val orderedBatchResults =
-                    batchResults.sortedBy { it.index }
-
-                for (indexedResult in orderedBatchResults) {
-
-                    val result = indexedResult.result.copy(
-                        fileName = indexedResult.fileName
-                    )
-
-                    allResults.add(result)
-
-                    processedCount++
-
-                    onProgress(
-                        processedCount,
-                        total,
-                        result
-                    )
-                }
-
-                /**
-                 * تأخير بسيط بين الدفعات.
-                 *
-                 * يساعد على تقليل الضغط على API.
-                 */
-                if (batch !== batches.last()) {
-                    delay(1000L)
-                }
-            }
-
-            allResults
-        }
-    }
-
-    // ============================================================
-    // معالجة الدفعة مع Fallback
-    // ============================================================
-
-    private suspend fun processBatchWithFallback(
-        batch: List<DocumentItem>,
-        fields: List<ExtractionField>,
-        freeTextPrompt: String,
-        isFreeTextMode: Boolean
-    ): List<IndexedResult> {
-
-        /**
-         * في حالة وجود أكثر من صورة:
-         * نرسلها في طلب واحد.
-         *
-         * إذا فشل الطلب بسبب مشكلة عادية في تحليل المجموعة،
-         * نقسمها إلى مجموعات أصغر.
-         *
-         * أما 429 بسبب الحصة اليومية فلا نقسم ولا نعيد المحاولة.
-         */
-
-        try {
-
-            val preparedImages = batch.map { document ->
-                prepareImage(document.uri)
-            }
-
-            val prompt = if (isFreeTextMode) {
-                DynamicPromptBuilder.buildFreeTextPrompt(
-                    freeTextPrompt
-                )
-            } else {
-                DynamicPromptBuilder.buildFieldsPrompt(
-                    fields
-                )
-            }
-
-            val response = callVisionApiWithRetry(
-                prompt = prompt,
-                images = preparedImages
-            )
-
-            val parsedResults = parseBatchResponse(
-                response = response,
-                expectedCount = batch.size
-            )
-
-            if (parsedResults.size != batch.size) {
-                throw IOException(
-                    "عدد النتائج (${parsedResults.size}) لا يطابق عدد الصور (${batch.size})"
-                )
-            }
-
-            return batch.mapIndexed { localIndex, document ->
-
-                val parsedResult = parsedResults[localIndex]
-
-                IndexedResult(
-                    index = document.index,
-                    fileName = document.fileName,
-                    result = parsedResult.copy(
-                        fileName = document.fileName,
-                        status = "success"
-                    )
-                )
-            }
-
-        } catch (e: DailyQuotaExceededException) {
-
-            /**
-             * مهم جدًا:
-             * لا نقوم بالـ fallback عند تجاوز الحصة.
-             */
-            throw e
-
-        } catch (e: Exception) {
-
-            /**
-             * إذا كانت الصورة واحدة فلا يوجد شيء لتقسيمه.
-             */
-            if (batch.size <= 1) {
-
-                val document = batch.first()
-
-                return listOf(
-                    IndexedResult(
-                        index = document.index,
-                        fileName = document.fileName,
-                        result = ExtractionResult(
-                            fileName = document.fileName,
-                            status = "error",
-                            errorMessage = getErrorMessage(e)
-                        )
-                    )
-                )
-            }
-
-            /**
-             * تقسيم الدفعة إلى نصفين.
-             */
-            val middle = batch.size / 2
-
-            val firstHalf = batch.subList(
-                0,
-                middle
-            )
-
-            val secondHalf = batch.subList(
-                middle,
-                batch.size
-            )
-
-            val firstResults = processBatchWithFallback(
-                batch = firstHalf,
-                fields = fields,
-                freeTextPrompt = freeTextPrompt,
-                isFreeTextMode = isFreeTextMode
-            )
-
-            val secondResults = processBatchWithFallback(
-                batch = secondHalf,
-                fields = fields,
-                freeTextPrompt = freeTextPrompt,
-                isFreeTextMode = isFreeTextMode
-            )
-
-            return firstResults + secondResults
-        }
-    }
-
-    // ============================================================
-    // API Retry
-    // ============================================================
-
-    private suspend fun callVisionApiWithRetry(
-        prompt: String,
-        images: List<PreparedImage>
-    ): String {
-
-        var lastException: Exception? = null
-
-        for (attempt in 0 until MAX_RETRY_ATTEMPTS) {
-
-            if (attempt > 0) {
-                delay(
-                    RETRY_DELAYS_MS[
-                        attempt.coerceAtMost(
-                            RETRY_DELAYS_MS.lastIndex
-                        )
-                    ]
-                )
-            }
-
-            try {
-
-                return callVisionApi(
-                    prompt = prompt,
-                    images = images
-                )
-
-            } catch (e: DailyQuotaExceededException) {
-
-                /**
-                 * لا تعيد المحاولة عند الحصة اليومية.
-                 */
-                throw e
-
-            } catch (e: Exception) {
-
-                lastException = e
-
-                if (!isRetryableError(e)) {
-                    throw e
-                }
-            }
+        if (activeFields.isEmpty()) {
+            return buildNoFieldsPrompt()
         }
 
-        throw lastException
-            ?: IOException("فشلت جميع محاولات الاتصال بالذكاء الاصطناعي.")
-    }
+        val fieldsDescription = activeFields.joinToString("\n") { field ->
 
-    // ============================================================
-    // اختيار Provider
-    // ============================================================
-
-    private fun callVisionApi(
-        prompt: String,
-        images: List<PreparedImage>
-    ): String {
-
-        return when (settings.provider.lowercase()) {
-
-            "gemini" -> {
-                callGeminiVision(
-                    prompt = prompt,
-                    images = images
-                )
-            }
-
-            "openrouter" -> {
-                callOpenAICompatibleVision(
-                    baseUrl = "https://openrouter.ai/api/v1/chat/completions",
-                    apiKey = settings.openrouterKey,
-                    model = settings.openrouterModel,
-                    prompt = prompt,
-                    images = images,
-                    providerName = "OpenRouter"
-                )
-            }
-
-            "openai" -> {
-                callOpenAICompatibleVision(
-                    baseUrl = "https://api.openai.com/v1/chat/completions",
-                    apiKey = settings.openaiKey,
-                    model = settings.openaiModel,
-                    prompt = prompt,
-                    images = images,
-                    providerName = "OpenAI"
-                )
-            }
-
-            "groq" -> {
-                callOpenAICompatibleVision(
-                    baseUrl = "https://api.groq.com/openai/v1/chat/completions",
-                    apiKey = settings.groqKey,
-                    model = settings.groqModel,
-                    prompt = prompt,
-                    images = images,
-                    providerName = "Groq"
-                )
-            }
-
-            "mistral" -> {
-                callOpenAICompatibleVision(
-                    baseUrl = "https://api.mistral.ai/v1/chat/completions",
-                    apiKey = settings.mistralKey,
-                    model = settings.mistralModel,
-                    prompt = prompt,
-                    images = images,
-                    providerName = "Mistral"
-                )
-            }
-
-            "custom" -> {
-
-                if (settings.customUrl.isBlank()) {
-                    throw IOException(
-                        "Custom API URL is empty"
-                    )
-                }
-
-                callOpenAICompatibleVision(
-                    baseUrl = settings.customUrl,
-                    apiKey = settings.customKey,
-                    model = settings.customModel,
-                    prompt = prompt,
-                    images = images,
-                    providerName = "Custom"
-                )
-            }
-
-            else -> {
-                throw IOException(
-                    "Unsupported AI provider: ${settings.provider}"
-                )
-            }
-        }
-    }
-
-    // ============================================================
-    // Gemini Vision
-    // ============================================================
-
-    private fun callGeminiVision(
-        prompt: String,
-        images: List<PreparedImage>
-    ): String {
-
-        val apiKey = settings.geminiKey
-
-        if (apiKey.isBlank()) {
-            throw IOException(
-                "Gemini API key is empty"
-            )
-        }
-
-        val model = settings.geminiModel
-            .ifBlank {
-                DEFAULT_GEMINI_MODEL
-            }
-
-        val endpoint =
-            "https://generativelanguage.googleapis.com/v1beta/models/" +
-                    "$model:generateContent?key=$apiKey"
-
-        val parts = JSONArray()
-
-        parts.put(
-            JSONObject().apply {
-                put("text", prompt)
-            }
-        )
-
-        images.forEach { image ->
-
-            parts.put(
-                JSONObject().apply {
-                    put(
-                        "inline_data",
-                        JSONObject().apply {
-                            put(
-                                "mime_type",
-                                image.mimeType
-                            )
-
-                            put(
-                                "data",
-                                image.base64
-                            )
-                        }
-                    )
-                }
-            )
-        }
-
-        val requestJson = JSONObject().apply {
-
-            put(
-                "contents",
-                JSONArray().put(
-                    JSONObject().apply {
-                        put(
-                            "parts",
-                            parts
-                        )
-                    }
-                )
-            )
-
-            put(
-                "generationConfig",
-                JSONObject().apply {
-                    put(
-                        "temperature",
-                        0.1
-                    )
-
-                    put(
-                        "maxOutputTokens",
-                        8192
-                    )
-
-                    put(
-                        "responseMimeType",
-                        "application/json"
-                    )
-                }
-            )
-        }
-
-        val requestBody = requestJson
-            .toString()
-            .toRequestBody(
-                "application/json; charset=utf-8".toMediaType()
-            )
-
-        val request = Request.Builder()
-            .url(endpoint)
-            .post(requestBody)
-            .addHeader(
-                "Content-Type",
-                "application/json"
-            )
-            .build()
-
-        client.newCall(request).execute().use { response ->
-
-            val body = response.body?.string().orEmpty()
-
-            if (!response.isSuccessful) {
-
-                if (response.code == 429) {
-
-                    if (isGeminiDailyQuotaResponse(body)) {
-
-                        throw DailyQuotaExceededException(
-                            buildGeminiQuotaMessage(body)
-                        )
-                    }
-
-                    throw IOException(
-                        "Gemini HTTP 429: ${extractApiErrorMessage(body)}"
-                    )
-                }
-
-                if (
-                    response.code == 500 ||
-                    response.code == 502 ||
-                    response.code == 503 ||
-                    response.code == 504
-                ) {
-                    throw IOException(
-                        "Gemini HTTP ${response.code}: " +
-                                extractApiErrorMessage(body)
-                    )
-                }
-
-                throw IOException(
-                    "Gemini HTTP ${response.code}: " +
-                            extractApiErrorMessage(body)
-                )
-            }
-
-            return extractGeminiText(body)
-        }
-    }
-
-    // ============================================================
-    // OpenAI-compatible Vision
-    // ============================================================
-
-    private fun callOpenAICompatibleVision(
-        baseUrl: String,
-        apiKey: String,
-        model: String,
-        prompt: String,
-        images: List<PreparedImage>,
-        providerName: String
-    ): String {
-
-        if (apiKey.isBlank()) {
-            throw IOException(
-                "$providerName API key is empty"
-            )
-        }
-
-        if (model.isBlank()) {
-            throw IOException(
-                "$providerName model is empty"
-            )
-        }
-
-        val content = JSONArray()
-
-        content.put(
-            JSONObject().apply {
-                put(
-                    "type",
-                    "text"
-                )
-
-                put(
-                    "text",
-                    prompt
-                )
-            }
-        )
-
-        images.forEach { image ->
-
-            content.put(
-                JSONObject().apply {
-
-                    put(
-                        "type",
-                        "image_url"
-                    )
-
-                    put(
-                        "image_url",
-                        JSONObject().apply {
-
-                            put(
-                                "url",
-                                "data:${image.mimeType};base64,${image.base64}"
-                            )
-                        }
-                    )
-                }
-            )
-        }
-
-        val message = JSONObject().apply {
-
-            put(
-                "role",
-                "user"
-            )
-
-            put(
-                "content",
-                content
-            )
-        }
-
-        val requestJson = JSONObject().apply {
-
-            put(
-                "model",
-                model
-            )
-
-            put(
-                "messages",
-                JSONArray().put(message)
-            )
-
-            put(
-                "temperature",
-                0.1
-            )
-
-            put(
-                "max_tokens",
-                8192
-            )
-
-            put(
-                "response_format",
-                JSONObject().apply {
-                    put(
-                        "type",
-                        "json_object"
-                    )
-                }
-            )
-        }
-
-        val requestBody = requestJson
-            .toString()
-            .toRequestBody(
-                "application/json; charset=utf-8".toMediaType()
-            )
-
-        val requestBuilder = Request.Builder()
-            .url(baseUrl)
-            .post(requestBody)
-            .addHeader(
-                "Content-Type",
-                "application/json"
-            )
-
-        if (apiKey.isNotBlank()) {
-            requestBuilder.addHeader(
-                "Authorization",
-                "Bearer $apiKey"
-            )
-        }
-
-        if (providerName == "OpenRouter") {
-            requestBuilder.addHeader(
-                "HTTP-Referer",
-                "https://github.com/"
-            )
-
-            requestBuilder.addHeader(
-                "X-Title",
-                "UniversalDocExtractor"
-            )
-        }
-
-        client.newCall(
-            requestBuilder.build()
-        ).execute().use { response ->
-
-            val body = response.body?.string().orEmpty()
-
-            if (!response.isSuccessful) {
-
-                /**
-                 * 429:
-                 * لا نعتبره خطأ قابلًا لإعادة المحاولة تلقائيًا.
-                 */
-                if (response.code == 429) {
-                    throw IOException(
-                        "$providerName HTTP 429: " +
-                                extractApiErrorMessage(body)
-                    )
-                }
-
-                if (
-                    response.code == 500 ||
-                    response.code == 502 ||
-                    response.code == 503 ||
-                    response.code == 504
-                ) {
-                    throw IOException(
-                        "$providerName HTTP ${response.code}: " +
-                                extractApiErrorMessage(body)
-                    )
-                }
-
-                throw IOException(
-                    "$providerName HTTP ${response.code}: " +
-                            extractApiErrorMessage(body)
-                )
-            }
-
-            return extractOpenAICompatibleText(
-                body
-            )
-        }
-    }
-
-    // ============================================================
-    // استخراج نص Gemini
-    // ============================================================
-
-    private fun extractGeminiText(
-        body: String
-    ): String {
-
-        try {
-
-            val root = JSONObject(body)
-
-            val candidates =
-                root.optJSONArray("candidates")
-
-            if (
-                candidates == null ||
-                candidates.length() == 0
-            ) {
-                throw IOException(
-                    "Gemini returned no candidates: " +
-                            extractApiErrorMessage(body)
-                )
-            }
-
-            val candidate =
-                candidates.optJSONObject(0)
-                    ?: throw IOException(
-                        "Gemini candidate is invalid"
-                    )
-
-            val content =
-                candidate.optJSONObject("content")
-                    ?: throw IOException(
-                        "Gemini content is missing"
-                    )
-
-            val parts =
-                content.optJSONArray("parts")
-                    ?: throw IOException(
-                        "Gemini parts are missing"
-                    )
-
-            val result = StringBuilder()
-
-            for (i in 0 until parts.length()) {
-
-                val part =
-                    parts.optJSONObject(i)
-                        ?: continue
-
-                val text =
-                    part.optString(
-                        "text",
-                        ""
-                    )
-
-                if (text.isNotBlank()) {
-                    result.append(text)
-                }
-            }
-
-            if (result.isBlank()) {
-                throw IOException(
-                    "Gemini returned empty text"
-                )
-            }
-
-            return result.toString()
-
-        } catch (e: IOException) {
-            throw e
-
-        } catch (e: Exception) {
-            throw IOException(
-                "Failed to parse Gemini response: " +
-                        (e.message ?: "Unknown error")
-            )
-        }
-    }
-
-    // ============================================================
-    // استخراج نص OpenAI compatible
-    // ============================================================
-
-    private fun extractOpenAICompatibleText(
-        body: String
-    ): String {
-
-        try {
-
-            val root = JSONObject(body)
-
-            val choices =
-                root.optJSONArray("choices")
-
-            if (
-                choices == null ||
-                choices.length() == 0
-            ) {
-                throw IOException(
-                    "API returned no choices: " +
-                            extractApiErrorMessage(body)
-                )
-            }
-
-            val choice =
-                choices.optJSONObject(0)
-                    ?: throw IOException(
-                        "API choice is invalid"
-                    )
-
-            val message =
-                choice.optJSONObject("message")
-                    ?: throw IOException(
-                        "API message is missing"
-                    )
-
-            val content =
-                message.optString(
-                    "content",
-                    ""
-                )
-
-            if (content.isBlank()) {
-                throw IOException(
-                    "API returned empty content"
-                )
-            }
-
-            return content
-
-        } catch (e: IOException) {
-            throw e
-
-        } catch (e: Exception) {
-            throw IOException(
-                "Failed to parse API response: " +
-                        (e.message ?: "Unknown error")
-            )
-        }
-    }
-
-    // ============================================================
-    // تحليل نتيجة الدفعة
-    // ============================================================
-
-    private fun parseBatchResponse(
-        response: String,
-        expectedCount: Int
-    ): List<ExtractionResult> {
-
-        val cleanJson = extractJson(
-            response
-        )
-
-        try {
-
-            val root = JSONObject(
-                cleanJson
-            )
-
-            /**
-             * بعض النماذج تعيد:
-             *
-             * {
-             *   "results": [...]
-             * }
-             */
-
-            val wrapperKeys = listOf(
-                "results",
-                "documents",
-                "items",
-                "data"
-            )
-
-            for (key in wrapperKeys) {
-
-                val array =
-                    root.optJSONArray(key)
-
-                if (array != null) {
-                    return parseResultsArray(
-                        array
-                    )
-                }
-            }
-
-            /**
-             * إذا كانت صورة واحدة قد يعيد النموذج
-             * كائنًا واحدًا بدل مصفوفة.
-             */
-            if (expectedCount == 1) {
-
-                return listOf(
-                    parseResultObject(root)
-                )
-            }
-
-        } catch (_: Exception) {
-            // نحاول Array بالأسفل
-        }
-
-        try {
-
-            val array = JSONArray(
-                cleanJson
-            )
-
-            return parseResultsArray(
-                array
-            )
-
-        } catch (e: Exception) {
-
-            throw IOException(
-                "فشل تحليل JSON من الذكاء الاصطناعي: " +
-                        (
-                            e.message
-                                ?: "Invalid JSON"
-                        )
-            )
-        }
-    }
-
-    private fun parseResultsArray(
-        array: JSONArray
-    ): List<ExtractionResult> {
-
-        val results =
-            mutableListOf<ExtractionResult>()
-
-        for (i in 0 until array.length()) {
-
-            val obj =
-                array.optJSONObject(i)
-                    ?: continue
-
-            results.add(
-                parseResultObject(obj)
-            )
-        }
-
-        return results
-    }
-
-    private fun parseResultObject(
-        obj: JSONObject
-    ): ExtractionResult {
-
-        val values =
-            mutableMapOf<String, String>()
-
-        /**
-         * ندعم:
-         *
-         * {
-         *   "image_index": 1,
-         *   "اسم الطالب": "...",
-         *   "رقم القيد": "..."
-         * }
-         *
-         * وكذلك:
-         *
-         * {
-         *   "image_index": 1,
-         *   "values": {
-         *      "اسم الطالب": "..."
-         *   }
-         * }
-         */
-
-        val nestedValues =
-            obj.optJSONObject("values")
-
-        if (nestedValues != null) {
-
-            val keys =
-                nestedValues.keys()
-
-            while (keys.hasNext()) {
-
-                val key = keys.next()
-
-                values[key] =
-                    nestedValues.optString(
-                        key,
-                        ""
-                    )
-            }
-
-        } else {
-
-            val keys = obj.keys()
-
-            while (keys.hasNext()) {
-
-                val key = keys.next()
-
-                if (
-                    key == "image_index" ||
-                    key == "fileName" ||
-                    key == "status" ||
-                    key == "errorMessage"
-                ) {
-                    continue
-                }
-
-                val value =
-                    obj.opt(key)
-
-                when (value) {
-
-                    is JSONArray -> {
-                        values[key] =
-                            value.toString()
-                    }
-
-                    is JSONObject -> {
-                        values[key] =
-                            value.toString()
-                    }
-
-                    null -> {
-                        values[key] = ""
-                    }
-
-                    else -> {
-                        values[key] =
-                            value.toString()
-                    }
-                }
-            }
-        }
-
-        return ExtractionResult(
-            fileName = obj.optString(
-                "fileName",
-                ""
-            ),
-            values = values,
-            status = obj.optString(
-                "status",
-                "success"
-            ),
-            errorMessage = obj.optString(
-                "errorMessage",
-                ""
-            )
-        )
-    }
-
-    // ============================================================
-    // استخراج JSON من النص
-    // ============================================================
-
-    private fun extractJson(
-        response: String
-    ): String {
-
-        var text = response.trim()
-
-        /**
-         * إزالة Markdown fences.
-         */
-        if (text.startsWith("```")) {
-
-            text = text
-                .removePrefix("```json")
-                .removePrefix("```JSON")
-                .removePrefix("```")
-                .removeSuffix("```")
+            val description = field.description
                 .trim()
-        }
-
-        /**
-         * البحث عن Array أولاً.
-         */
-        val arrayStart = text.indexOf("[")
-        val arrayEnd = text.lastIndexOf("]")
-
-        if (
-            arrayStart >= 0 &&
-            arrayEnd > arrayStart
-        ) {
-            return text.substring(
-                arrayStart,
-                arrayEnd + 1
-            )
-        }
-
-        /**
-         * ثم البحث عن Object.
-         */
-        val objectStart = text.indexOf("{")
-        val objectEnd = text.lastIndexOf("}")
-
-        if (
-            objectStart >= 0 &&
-            objectEnd > objectStart
-        ) {
-            return text.substring(
-                objectStart,
-                objectEnd + 1
-            )
-        }
-
-        throw IOException(
-            "لم يتم العثور على JSON صالح في استجابة الذكاء الاصطناعي."
-        )
-    }
-
-    // ============================================================
-    // تجهيز الصورة
-    // ============================================================
-
-    private fun prepareImage(
-        uri: Uri
-    ): PreparedImage {
-
-        val resolver =
-            context.contentResolver
-
-        val inputStream =
-            resolver.openInputStream(uri)
-                ?: throw IOException(
-                    "تعذر فتح الصورة: $uri"
-                )
-
-        val bitmap = try {
-
-            BitmapFactory.decodeStream(
-                inputStream
-            )
-                ?: throw IOException(
-                    "تعذر قراءة الصورة: $uri"
-                )
-
-        } finally {
-            inputStream.close()
-        }
-
-        val resizedBitmap =
-            resizeBitmapIfNeeded(
-                bitmap
-            )
-
-        val outputStream =
-            java.io.ByteArrayOutputStream()
-
-        try {
-
-            resizedBitmap.compress(
-                Bitmap.CompressFormat.JPEG,
-                JPEG_QUALITY,
-                outputStream
-            )
-
-            val bytes =
-                outputStream.toByteArray()
-
-            return PreparedImage(
-                mimeType = "image/jpeg",
-                base64 = Base64.encodeToString(
-                    bytes,
-                    Base64.NO_WRAP
-                )
-            )
-
-        } finally {
-
-            outputStream.close()
-
-            if (resizedBitmap !== bitmap) {
-                resizedBitmap.recycle()
-            }
-
-            bitmap.recycle()
-        }
-    }
-
-    private fun resizeBitmapIfNeeded(
-        bitmap: Bitmap
-    ): Bitmap {
-
-        val width = bitmap.width
-        val height = bitmap.height
-
-        if (
-            width <= MAX_IMAGE_DIMENSION &&
-            height <= MAX_IMAGE_DIMENSION
-        ) {
-            return bitmap
-        }
-
-        val scale =
-            minOf(
-                MAX_IMAGE_DIMENSION.toFloat() /
-                        width.toFloat(),
-                MAX_IMAGE_DIMENSION.toFloat() /
-                        height.toFloat()
-            )
-
-        val newWidth =
-            (width * scale).toInt()
-
-        val newHeight =
-            (height * scale).toInt()
-
-        return Bitmap.createScaledBitmap(
-            bitmap,
-            newWidth,
-            newHeight,
-            true
-        )
-    }
-
-    // ============================================================
-    // اسم الملف
-    // ============================================================
-
-    private fun getFileName(
-    uri: Uri
-): String {
-
-    val queriedName = try {
-
-        context.contentResolver
-            .query(
-                uri,
-                arrayOf(
-                    android.provider.OpenableColumns.DISPLAY_NAME
-                ),
-                null,
-                null,
-                null
-            )
-            ?.use { cursor ->
-
-                if (cursor.moveToFirst()) {
-
-                    val index =
-                        cursor.getColumnIndex(
-                            android.provider.OpenableColumns.DISPLAY_NAME
-                        )
-
-                    if (index >= 0) {
-                        cursor.getString(index)
-                            ?.takeIf { it.isNotBlank() }
-                    } else {
-                        null
-                    }
-
-                } else {
-                    null
-                }
-            }
-
-    } catch (_: Exception) {
-        null
-    }
-
-    return queriedName
-        ?: uri.lastPathSegment
-            ?.substringAfterLast("/")
-            ?.ifBlank {
-                "document"
-            }
-        ?: "document"
-    }
-    // ============================================================
-    // تحديد أخطاء إعادة المحاولة
-    // ============================================================
-
-    private fun isRetryableError(
-        error: Throwable
-    ): Boolean {
-
-        /**
-         * Timeout:
-         * يمكن إعادة المحاولة.
-         */
-        if (error is SocketTimeoutException) {
-            return true
-        }
-
-        val message =
-            buildFullErrorMessage(error)
-                .lowercase()
-
-        /**
-         * 429 غير قابل لإعادة المحاولة هنا.
-         *
-         * لأنه قد يكون:
-         * - daily quota
-         * - RPM
-         * - billing quota
-         *
-         * وفي جميع الحالات لا نريد إرسال أربع محاولات
-         * إضافية بشكل أعمى.
-         */
-        if (
-            message.contains("429") ||
-            message.contains("resource_exhausted") ||
-            message.contains("quota")
-        ) {
-            return false
-        }
-
-        return message.contains("http 500") ||
-                message.contains("http 502") ||
-                message.contains("http 503") ||
-                message.contains("http 504") ||
-                message.contains("temporarily unavailable") ||
-                message.contains("temporary unavailable") ||
-                message.contains("connection reset") ||
-                message.contains("connection refused") ||
-                message.contains("failed to connect") ||
-                message.contains("timeout")
-    }
-
-    // ============================================================
-    // اكتشاف Gemini Daily Quota
-    // ============================================================
-
-    private fun isGeminiDailyQuotaResponse(
-        body: String
-    ): Boolean {
-
-        val lower =
-            body.lowercase()
-
-        /**
-         * المؤشرات الأقوى التي ظهرت في استجابة Gemini
-         * التي واجهتها في المشروع.
-         */
-        if (
-            lower.contains(
-                "generate_content_free_tier_requests"
-            )
-        ) {
-            return true
-        }
-
-        if (
-            lower.contains(
-                "generate_requests_per_day"
-            ) &&
-            lower.contains("free")
-        ) {
-            return true
-        }
-
-        if (
-            lower.contains("perday") &&
-            lower.contains("free")
-        ) {
-            return true
-        }
-
-        if (
-            lower.contains("quotavalue") &&
-            lower.contains("free")
-        ) {
-            return true
-        }
-
-        if (
-            lower.contains(
-                "generaterequestsperdaypermodelfreetier"
-            )
-        ) {
-            return true
-        }
-
-        return false
-    }
-
-    // ============================================================
-    // رسالة الحصة اليومية
-    // ============================================================
-
-    private fun buildGeminiQuotaMessage(
-        body: String
-    ): String {
-
-        var quotaValue = ""
-
-        var retryDelay = ""
-
-        try {
-
-            val root =
-                JSONObject(body)
-
-            val details =
-                root.optJSONArray(
-                    "details"
-                )
-
-            if (details != null) {
-
-                for (i in 0 until details.length()) {
-
-                    val item =
-                        details.optJSONObject(i)
-                            ?: continue
-
-                    val quotaFailure =
-                        item.optJSONObject(
-                            "quotaFailure"
-                        )
-
-                    if (quotaFailure != null) {
-
-                        val violations =
-                            quotaFailure.optJSONArray(
-                                "violations"
-                            )
-
-                        if (violations != null) {
-
-                            for (
-                                j in 0 until violations.length()
-                            ) {
-
-                                val violation =
-                                    violations.optJSONObject(j)
-                                        ?: continue
-
-                                val value =
-                                    violation.optString(
-                                        "quotaValue",
-                                        ""
-                                    )
-
-                                if (value.isNotBlank()) {
-                                    quotaValue = value
-                                    break
-                                }
-                            }
-                        }
-                    }
-
-                    val retryInfo =
-                        item.optJSONObject(
-                            "retryDelay"
-                        )
-
-                    if (retryInfo != null) {
-
-                        retryDelay =
-                            retryInfo.optString(
-                                "retryDelay",
-                                ""
-                            )
-                    }
-
-                    if (retryDelay.isBlank()) {
-
-                        val retryInfo2 =
-                            item.optJSONObject(
-                                "retryInfo"
-                            )
-
-                        if (retryInfo2 != null) {
-                            retryDelay =
-                                retryInfo2.optString(
-                                    "retryDelay",
-                                    ""
-                                )
-                        }
-                    }
-                }
-            }
-
-        } catch (_: Exception) {
-        }
-
-        val quotaPart =
-            if (quotaValue.isNotBlank()) {
-                " الحد المسموح الظاهر في الاستجابة: $quotaValue."
-            } else {
-                ""
-            }
-
-        val retryPart =
-            if (retryDelay.isNotBlank()) {
-                " الخادم يقترح الانتظار $retryDelay قبل المحاولة التالية."
-            } else {
-                ""
-            }
-
-        return "تم تجاوز حصة Gemini الحالية للطلبات. " +
-                "هذا ليس خطأ في الصورة أو استخراج البيانات؛ " +
-                "إنما بسبب حدود استخدام API أو الخطة الحالية." +
-                quotaPart +
-                retryPart +
-                " لن يعيد التطبيق إرسال الطلب تلقائيًا حتى لا يستهلك محاولات إضافية."
-    }
-
-    // ============================================================
-    // قراءة رسالة خطأ API
-    // ============================================================
-
-    private fun extractApiErrorMessage(
-        body: String
-    ): String {
-
-        if (body.isBlank()) {
-            return "Empty response"
-        }
-
-        return try {
-
-            val root =
-                JSONObject(body)
-
-            val error =
-                root.optJSONObject("error")
-
-            if (error != null) {
-
-                val message =
-                    error.optString(
-                        "message",
-                        ""
-                    )
-
-                val status =
-                    error.optString(
-                        "status",
-                        ""
-                    )
-
-                when {
-                    message.isNotBlank() &&
-                            status.isNotBlank() -> {
-                        "$status: $message"
-                    }
-
-                    message.isNotBlank() -> {
-                        message
-                    }
-
-                    status.isNotBlank() -> {
-                        status
-                    }
-
-                    else -> {
-                        body.take(1000)
-                    }
+                .ifBlank {
+                    "اقرأ القيمة الظاهرة المرتبطة بهذا الحقل مباشرة من الصورة."
                 }
 
-            } else {
-
-                body.take(1000)
-            }
-
-        } catch (_: Exception) {
-
-            body.take(1000)
+            "- \"${field.name}\": $description"
         }
+
+        val jsonExample = activeFields.joinToString(",\n") { field ->
+            "      \"${field.name}\": \"\""
+        }
+
+        return """
+أنت محرك OCR بصري عام لاستخراج البيانات من الصور والوثائق.
+
+مهمتك هي قراءة القيم المطلوبة من الصورة ونسخها كما تظهر بصريًا.
+
+لا تفترض نوع الوثيقة.
+لا تفترض محتوى الوثيقة.
+لا تستخدم المعرفة الخارجية.
+
+الحقول المطلوبة:
+
+$fieldsDescription
+
+==================================================
+طريقة القراءة
+==================================================
+
+لكل حقل:
+
+1. حدد موضع الحقل أو القيمة المرتبطة به داخل الصورة.
+2. ركز على النص الموجود في تلك المنطقة فقط.
+3. اقرأ الأحرف والكلمات المرئية فعليًا.
+4. انسخ القيمة المقروءة بدل تفسير معناها.
+5. لا تستخدم المعلومات الموجودة في الحقول الأخرى لإكمال القيمة.
+6. لا تبحث عن "القيمة الصحيحة" أو "القيمة المتوقعة".
+7. إذا تعذر قراءة القيمة بشكل موثوق، استخدم "".
+
+المطلوب هو OCR بصري، وليس استكمالًا ذكيًا للنص.
+
+==================================================
+قاعدة الأسماء والنص العربي
+==================================================
+
+هذه القاعدة مهمة جدًا.
+
+إذا كان الحقل اسم شخص أو جهة أو مؤسسة أو عنوانًا عربيًا:
+
+اقرأ الحروف المرئية من الصورة كما هي.
+
+لا تبحث عن اسم عربي مألوف يشبه القراءة الجزئية.
+
+لا تستبدل سلسلة حروف غير واضحة باسم تعرفه.
+
+لا تستخدم السياق لتحديد الاسم.
+
+لا تستخدم رقمًا أو عنوانًا أو مؤسسة لتخمين الاسم.
+
+لا تضف كلمات غير ظاهرة.
+
+لا تحذف كلمات ظاهرة.
+
+لا تغير ترتيب الكلمات.
+
+لا تكمل الجزء غير المقروء.
+
+إذا كنت غير متأكد من حرف واحد أو أكثر:
+
+اترك القيمة فارغة "" بدل اختراع بقية الاسم.
+
+مثال:
+
+إذا استطعت رؤية جزء من الاسم فقط ولكن بقية الاسم غير واضحة،
+لا تكمل الاسم من الذاكرة.
+
+الدقة البصرية أهم من الحصول على اسم كامل.
+
+==================================================
+منع التصحيح الدلالي
+==================================================
+
+ممنوع إجراء semantic correction.
+
+أي:
+
+لا تحول النص الذي قرأته إلى كلمة أو اسم أكثر شيوعًا فقط لأنه يبدو منطقيًا.
+
+لا تفكر:
+
+"ربما المقصود هو..."
+
+ثم تكتب الاحتمال.
+
+اكتب ما تستطيع رؤيته.
+
+إذا كانت القراءة غير مؤكدة، استخدم "".
+
+المعنى لا يجوز أن يتغلب على شكل الحروف في الصورة.
+
+==================================================
+الأرقام
+==================================================
+
+اقرأ كل رقم من الصورة مباشرة.
+
+لا تخمن الأرقام.
+
+لا تكمل رقمًا ناقصًا.
+
+لا تغير ترتيب الأرقام.
+
+لا تضف أصفارًا.
+
+لا تحذف أرقامًا.
+
+لا تستنتج رقمًا من حقل آخر.
+
+إذا كان الرقم غير واضح بشكل موثوق:
+
+""
+
+==================================================
+التواريخ والقيم
+==================================================
+
+اقرأ التاريخ أو القيمة كما تظهر في الصورة.
+
+حافظ على الصيغة الأصلية قدر الإمكان.
+
+لا تستنتج تاريخًا ناقصًا.
+
+لا تحول القيمة إلى قيمة أخرى.
+
+لا تحسب بدل الاستخراج.
+
+حافظ على:
+
+- %
+- العملات
+- الوحدات
+- النقاط
+- الفواصل
+- الشرطات
+- الشرطات المائلة
+- الرموز الظاهرة
+
+==================================================
+القيم المتعددة المتشابهة
+==================================================
+
+إذا ظهرت عدة قيم متشابهة في الوثيقة:
+
+حدد القيمة المرتبطة بالحقل المطلوب من موضعها أو عنوانها.
+
+لا تختار قيمة عشوائية.
+
+إذا لم تستطع تحديد العلاقة بشكل موثوق:
+
+""
+
+==================================================
+الصور المتعددة
+==================================================
+
+قد تحتوي الرسالة على صورة واحدة أو عدة صور.
+
+كل صورة وثيقة مستقلة.
+
+لكل صورة:
+
+- اقرأ الصورة وحدها.
+- لا تستخدم بيانات صورة أخرى.
+- لا تنقل أي قيمة بين الصور.
+- لا تفترض أن الصور تخص نفس الشخص.
+- لا تدمج نتائج الصور.
+- حافظ على ترتيب الصور.
+
+الصورة 1 → النتيجة 1
+الصورة 2 → النتيجة 2
+الصورة 3 → النتيجة 3
+
+عدد النتائج يجب أن يساوي عدد الصور.
+
+==================================================
+متى تستخدم قيمة فارغة؟
+==================================================
+
+استخدم "" عندما:
+
+- لا يوجد الحقل في الصورة.
+- القيمة غير واضحة.
+- جزء مهم من القيمة غير مقروء.
+- لا تستطيع تحديد القيمة المرتبطة بالحقل.
+- توجد أكثر من قراءة محتملة ولا يمكن حسمها بصريًا.
+
+لا تستخدم التخمين لسد الفراغ.
+
+==================================================
+تصحيح OCR
+==================================================
+
+يمكن تصحيح خطأ OCR فقط عندما يكون التصحيح واضحًا جدًا من شكل النص نفسه.
+
+لا تصحح اعتمادًا على:
+
+- اسم شائع.
+- كلمة شائعة.
+- معرفة سابقة.
+- سياق الوثيقة.
+- رقم آخر.
+- توقع منطقي.
+
+إذا كان هناك شك:
+
+""
+
+==================================================
+قاعدة المصدر الوحيد
+==================================================
+
+الصورة الحالية هي مصدر الحقيقة الوحيد.
+
+لا تستخدم:
+
+- الذاكرة.
+- المعرفة العامة.
+- معلومات من صور أخرى.
+- توقعات عن نوع الوثيقة.
+- توقعات عن الشخص.
+- توقعات عن المؤسسة.
+- القيم المعتادة لهذا النوع من المستندات.
+
+==================================================
+صيغة JSON
+==================================================
+
+أعد JSON فقط.
+
+لا تكتب أي شرح.
+
+لا تستخدم Markdown.
+
+لا تستخدم ```json.
+
+لا تكتب أي شيء قبل JSON أو بعده.
+
+صورة واحدة:
+
+[
+  {
+    "image_index": 1,
+    "values": {
+$jsonExample
+    }
+  }
+]
+
+عدة صور:
+
+[
+  {
+    "image_index": 1,
+    "values": {
+$jsonExample
+    }
+  },
+  {
+    "image_index": 2,
+    "values": {
+$jsonExample
+    }
+  }
+]
+
+قواعد JSON:
+
+- JSON صالح فقط.
+- image_index يبدأ من 1.
+- ترتيب النتائج يطابق ترتيب الصور.
+- كل صورة لها نتيجة مستقلة.
+- عدد النتائج يساوي عدد الصور.
+- values تحتوي الحقول المطلوبة فقط.
+- القيمة غير المقروءة = "".
+- لا تضف حقولًا غير مطلوبة.
+
+==================================================
+القاعدة النهائية
+==================================================
+
+اقرأ الحروف المرئية.
+
+لا تبحث عن الكلمة الصحيحة.
+
+لا تبحث عن الاسم الصحيح.
+
+لا تكمل النص من السياق.
+
+لا تحول قراءة غير مؤكدة إلى اسم مألوف.
+
+إذا كنت تستطيع قراءة القيمة بوضوح:
+اكتبها.
+
+إذا لم تستطع:
+اكتب "".
+
+OCR بصري دقيق > التخمين الذكي.
+
+أعد JSON فقط.
+        """.trimIndent()
     }
 
-    // ============================================================
-    // رسالة الخطأ النهائية
-    // ============================================================
+    fun buildFreeTextPrompt(userPrompt: String): String {
 
-    private fun getErrorMessage(
-        error: Throwable
-    ): String {
+        val cleanUserPrompt = userPrompt.trim()
 
-        val message =
-            buildFullErrorMessage(error)
+        return """
+أنت محرك OCR بصري عام متخصص في قراءة الوثائق والصور.
 
-        return if (message.isBlank()) {
-            "Unknown error"
-        } else {
-            message
-        }
+طلب المستخدم:
+
+$cleanUserPrompt
+
+==================================================
+طريقة العمل
+==================================================
+
+حلل الصورة بصريًا.
+
+حدد المعلومات المطلوبة.
+
+اقرأ النص الموجود فعليًا في الصورة.
+
+انسخ النص المرئي بدل تفسيره أو تخمينه.
+
+لا تفترض نوع الوثيقة.
+
+لا تستخدم المعرفة الخارجية.
+
+==================================================
+القراءة البصرية
+==================================================
+
+لكل معلومة مطلوبة:
+
+1. حدد المنطقة التي تحتوي عليها.
+2. اقرأ الأحرف المرئية في تلك المنطقة.
+3. انسخ ما تستطيع قراءته.
+4. لا تستخدم السياق لإكمال النص.
+5. إذا كان النص غير واضح، اتركه فارغًا.
+
+لا تبحث عن "القيمة الصحيحة".
+
+اقرأ القيمة الموجودة في الصورة فقط.
+
+==================================================
+الأسماء والنص العربي
+==================================================
+
+إذا ظهر اسم شخص أو جهة أو مؤسسة:
+
+اقرأ الحروف المرئية مباشرة.
+
+لا تستبدل اسمًا باسم آخر.
+
+لا تبحث عن اسم عربي مألوف.
+
+لا تكمل اسمًا ناقصًا.
+
+لا تستخدم رقمًا أو عنوانًا أو سياقًا لتخمين الاسم.
+
+لا تقم بـ semantic correction.
+
+إذا كان حرف واحد غير واضح وكان تغييره قد يؤدي إلى اسم مختلف:
+
+اترك القيمة فارغة بدل التخمين.
+
+==================================================
+الأرقام
+==================================================
+
+اقرأ الأرقام بصريًا.
+
+لا تخمن.
+
+لا تكمل الأرقام الناقصة.
+
+لا تغير ترتيبها.
+
+لا تضف أصفارًا.
+
+==================================================
+التواريخ والقيم
+==================================================
+
+انسخ التاريخ والقيمة كما تظهر.
+
+حافظ على الرموز والوحدات والنسب والعملات والصيغة الأصلية قدر الإمكان.
+
+لا تحسب أو تستنتج قيمة.
+
+==================================================
+الصور المتعددة
+==================================================
+
+كل صورة مستقلة.
+
+لا تخلط المعلومات.
+
+لا تستخدم بيانات صورة في صورة أخرى.
+
+حافظ على ترتيب الصور.
+
+يجب أن يكون لكل صورة عنصر مستقل في النتيجة.
+
+==================================================
+متى تستخدم قيمة فارغة؟
+==================================================
+
+إذا كانت المعلومة:
+
+- غير موجودة.
+- غير واضحة.
+- ناقصة.
+- لا يمكن ربطها بالحقل المطلوب بشكل موثوق.
+
+استخدم:
+
+""
+
+ولا تخمن.
+
+==================================================
+مصدر الحقيقة
+==================================================
+
+الصورة الحالية فقط.
+
+ممنوع استخدام:
+
+- الذاكرة.
+- المعرفة العامة.
+- التوقع.
+- أسماء شائعة.
+- معلومات من صورة أخرى.
+- استنتاج غير ظاهر في الصورة.
+
+==================================================
+JSON
+==================================================
+
+أعد JSON فقط.
+
+صورة واحدة:
+
+[
+  {
+    "image_index": 1,
+    "data": {}
+  }
+]
+
+عدة صور:
+
+[
+  {
+    "image_index": 1,
+    "data": {}
+  },
+  {
+    "image_index": 2,
+    "data": {}
+  }
+]
+
+لا Markdown.
+
+لا ```json.
+
+لا شرح.
+
+لا نص قبل JSON.
+
+لا نص بعد JSON.
+
+عدد النتائج يجب أن يساوي عدد الصور.
+
+==================================================
+القاعدة النهائية
+==================================================
+
+اقرأ ما تراه.
+
+لا تخمن ما لا تراه.
+
+لا تحول النص غير الواضح إلى كلمة مألوفة.
+
+الدقة البصرية أهم من اكتمال البيانات.
+
+أعد JSON فقط.
+        """.trimIndent()
     }
 
-    private fun buildFullErrorMessage(
-        error: Throwable
-    ): String {
+    private fun buildNoFieldsPrompt(): String {
 
-        val messages =
-            mutableListOf<String>()
+        return """
+أنت محرك OCR بصري عام.
 
-        var current: Throwable? =
-            error
+حلل كل صورة بشكل مستقل.
 
-        val visited =
-            mutableSetOf<Throwable>()
+اقرأ النص الموجود فعليًا في الصورة.
 
-        while (
-            current != null &&
-            visited.add(current)
-        ) {
+لا تخمن.
 
-            val message =
-                current.message
+لا تستنتج.
 
-            if (!message.isNullOrBlank()) {
+لا تستخدم المعرفة الخارجية.
 
-                messages.add(
-                    "${current.javaClass.simpleName}: $message"
-                )
-            }
+لا تخلط البيانات بين الصور.
 
-            current =
-                current.cause
-        }
+إذا كان النص غير واضح، لا تخمنه.
 
-        return messages.joinToString(
-            separator = " -> "
-        )
+أعد JSON فقط.
+
+صورة واحدة:
+
+[
+  {
+    "image_index": 1,
+    "values": {}
+  }
+]
+
+عدة صور:
+
+[
+  {
+    "image_index": 1,
+    "values": {}
+  },
+  {
+    "image_index": 2,
+    "values": {}
+  }
+]
+
+عدد النتائج يجب أن يساوي عدد الصور.
+
+لا تكتب أي شرح خارج JSON.
+        """.trimIndent()
     }
 }
