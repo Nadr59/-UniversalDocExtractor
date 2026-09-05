@@ -110,71 +110,87 @@ private data class DocumentItem(
 // معالجة مستند واحد  
 // ============================================================  
 
-suspend fun processDocument(  
-    uri: Uri,  
-    fields: List<ExtractionField>,  
-    freeTextPrompt: String = "",  
-    isFreeTextMode: Boolean = false  
-): ExtractionResult {  
+ suspend fun processDocument(
+    uri: Uri,
+    fields: List<ExtractionField>,
+    freeTextPrompt: String = "",
+    isFreeTextMode: Boolean = false
+): ExtractionResult {
 
-    return withContext(Dispatchers.IO) {  
+    val results =
+        processDocumentResults(
+            uri = uri,
+            fields = fields,
+            freeTextPrompt = freeTextPrompt,
+            isFreeTextMode = isFreeTextMode
+        )
 
-        val fileName = getFileName(uri)  
+    return results.firstOrNull()
+        ?: ExtractionResult(
+            fileName = getFileName(uri),
+            status = "error",
+            errorMessage = "لم يتم العثور على نتيجة."
+        )
+ }
 
-        try {  
+ private suspend fun processDocumentResults(
+    uri: Uri,
+    fields: List<ExtractionField>,
+    freeTextPrompt: String = "",
+    isFreeTextMode: Boolean = false
+): List<ExtractionResult> {
 
-            val preparedImage = prepareImage(uri)  
+    return withContext(Dispatchers.IO) {
 
-            val prompt = if (isFreeTextMode) {  
-                DynamicPromptBuilder.buildFreeTextPrompt(  
-                    freeTextPrompt  
-                )  
-            } else {  
-                DynamicPromptBuilder.buildFieldsPrompt(  
-                    fields  
-                )  
-            }  
+        val fileName = getFileName(uri)
 
-            val response = callVisionApiWithRetry(  
-                prompt = prompt,  
-                images = listOf(preparedImage)  
-            )  
+        try {
 
-            val parsed = parseBatchResponse(  
-                response = response,  
-                expectedCount = 1  
-            )  
+            val document = DocumentItem(
+                index = 0,
+                uri = uri,
+                fileName = fileName
+            )
 
-            if (parsed.isEmpty()) {  
-                throw IOException(  
-                    "لم يتم العثور على نتيجة للصورة"  
-                )  
-            }  
+            val results =
+                processBatchWithFallback(
+                    batch = listOf(document),
+                    fields = fields,
+                    freeTextPrompt = freeTextPrompt,
+                    isFreeTextMode = isFreeTextMode
+                )
 
-            parsed.first().copy(  
-                fileName = fileName,  
-                status = "success"  
-            )  
+            results.map { indexedResult ->
+                indexedResult.result.copy(
+                    fileName = fileName,
+                    status = "success"
+                )
+            }
 
-        } catch (e: DailyQuotaExceededException) {  
+        } catch (e: DailyQuotaExceededException) {
 
-            ExtractionResult(  
-                fileName = fileName,  
-                status = "error",  
-                errorMessage = e.message  
-                    ?: "تم تجاوز الحصة اليومية لخدمة الذكاء الاصطناعي."  
-            )  
+            listOf(
+                ExtractionResult(
+                    fileName = fileName,
+                    status = "error",
+                    errorMessage = e.message
+                        ?: "تم تجاوز الحصة اليومية لخدمة الذكاء الاصطناعي."
+                )
+            )
 
-        } catch (e: Exception) {  
+        } catch (e: Exception) {
 
-            ExtractionResult(  
-                fileName = fileName,  
-                status = "error",  
-                errorMessage = getErrorMessage(e)  
-            )  
-        }  
-    }  
-}  
+            listOf(
+                ExtractionResult(
+                    fileName = fileName,
+                    status = "error",
+                    errorMessage = getErrorMessage(e)
+                )
+            )
+        }
+    }
+ }
+    
 
 // ============================================================  
 // معالجة مجموعة كبيرة من الصور  
