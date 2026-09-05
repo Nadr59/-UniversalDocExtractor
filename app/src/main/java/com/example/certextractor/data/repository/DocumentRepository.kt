@@ -2307,84 +2307,112 @@ private fun extractOpenAICompatibleText(
 // تحليل نتيجة الدفعة  
 // ============================================================  
 
-private fun parseBatchResponse(  
-    response: String,  
-    expectedCount: Int  
-): List<ExtractionResult> {  
 
-    val cleanJson = extractJson(  
-        response  
-    )  
+    private fun parseBatchResponse(
+    response: String,
+    expectedCount: Int
+): List<ExtractionResult> {
 
-    try {  
+    val cleanJson = extractJson(response)
 
-        val root = JSONObject(  
-            cleanJson  
-        )  
+    try {
 
-        /**  
-         * بعض النماذج تعيد:  
-         *  
-         * {  
-         *   "results": [...]  
-         * }  
-         */  
+        val root = JSONObject(cleanJson)
 
-        val wrapperKeys = listOf(  
-            "results",  
-            "documents",  
-            "items",  
-            "data"  
-        )  
+        val wrapperKeys = listOf(
+            "results",
+            "documents",
+            "items",
+            "data"
+        )
 
-        for (key in wrapperKeys) {  
+        for (key in wrapperKeys) {
 
-            val array =  
-                root.optJSONArray(key)  
+            val array = root.optJSONArray(key)
 
-            if (array != null) {  
-                return parseResultsArray(  
-                    array  
-                )  
-            }  
-        }  
+            if (array != null) {
 
-        /**  
-         * إذا كانت صورة واحدة قد يعيد النموذج  
-         * كائنًا واحدًا بدل مصفوفة.  
-         */  
-        if (expectedCount == 1) {  
+                val parsed = parseResultsArray(array)
 
-            return listOf(  
-                parseResultObject(root)  
-            )  
-        }  
+                // ----------------------------------------
+                // فلتر السجلات الوهمية
+                // ----------------------------------------
+                return filterPhantomRecords(parsed)
+            }
+        }
 
-    } catch (_: Exception) {  
-        // نحاول Array بالأسفل  
-    }  
+        if (expectedCount == 1) {
+            val single = parseResultObject(root)
+            return filterPhantomRecords(listOf(single))
+        }
 
-    try {  
+    } catch (_: Exception) {
+        // نحاول Array بالأسفل
+    }
 
-        val array = JSONArray(  
-            cleanJson  
-        )  
+    try {
 
-        return parseResultsArray(  
-            array  
-        )  
+        val array = JSONArray(cleanJson)
+        val parsed = parseResultsArray(array)
+        return filterPhantomRecords(parsed)
 
-    } catch (e: Exception) {  
+    } catch (e: Exception) {
 
-        throw IOException(  
-            "فشل تحليل JSON من الذكاء الاصطناعي: " +  
-                    (  
-                        e.message  
-                            ?: "Invalid JSON"  
-                    )  
-        )  
-    }  
-}  
+        throw IOException(
+            "فشل تحليل JSON من الذكاء الاصطناعي: " +
+                    (e.message ?: "Invalid JSON")
+        )
+    }
+    }
+    /**
+ * يحذف السجلات الوهمية التي يضيفها النموذج.
+ *
+ * السجل الوهمي هو:
+ * 1. كل قيمه الحقيقية فارغة (باستثناء _row_number)
+ * 2. أو يحتوي على row_number مكرر
+ */
+private fun filterPhantomRecords(
+    results: List<ExtractionResult>
+): List<ExtractionResult> {
+
+    if (results.isEmpty()) return results
+
+    // --------------------------------------------------------
+    // 1. حذف السجلات التي كل قيمها فارغة
+    // --------------------------------------------------------
+    val nonEmpty = results.filter { result ->
+        val userValues = result.values
+            .filter { !it.key.startsWith("_") }
+        userValues.values.any { it.trim().isNotBlank() }
+    }
+
+    // --------------------------------------------------------
+    // 2. حذف السجلات ذات row_number المكرر
+    // الاحتفاظ بأول ظهور فقط
+    // --------------------------------------------------------
+    val seenRowNumbers = mutableSetOf<Int>()
+    val deduplicated = nonEmpty.filter { result ->
+
+        val rowNum = result.values["_row_number"]
+            ?.toIntOrNull()
+
+        if (rowNum == null) {
+            // لا يوجد row_number → نحتفظ به
+            true
+        } else {
+            // نحتفظ بأول ظهور فقط
+            seenRowNumbers.add(rowNum)
+        }
+    }
+
+    android.util.Log.d(
+        "FilterPhantom",
+        "before=${results.size} afterEmpty=${nonEmpty.size} afterDedup=${deduplicated.size}"
+    )
+
+    return deduplicated
+}
+      
 
 private fun parseResultsArray(  
     array: JSONArray  
