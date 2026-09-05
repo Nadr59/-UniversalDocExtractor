@@ -64,8 +64,8 @@ companion object {
         10000L  
     )  
 
-    private const val MAX_IMAGE_DIMENSION = 4096  
-    private const val JPEG_QUALITY = 95  
+    private const val MAX_IMAGE_DIMENSION = 2048  
+    private const val JPEG_QUALITY = 85  
 }  
 
 /**  
@@ -2547,6 +2547,8 @@ private fun parseResultsArray(
 // تجهيز الصورة  
 // ============================================================  
 
+
+
 private fun prepareImage(
     uri: Uri
 ): PreparedImage {
@@ -2563,10 +2565,7 @@ private fun prepareImage(
         inputStream.close()
     }
 
-    // تحسين الصورة قبل الإرسال
-    val enhancedBitmap = enhanceImageForOcr(bitmap)
-
-    val resizedBitmap = resizeBitmapIfNeeded(enhancedBitmap)
+    val resizedBitmap = resizeBitmapIfNeeded(bitmap)
 
     val outputStream = java.io.ByteArrayOutputStream()
 
@@ -2581,53 +2580,17 @@ private fun prepareImage(
 
         return PreparedImage(
             mimeType = "image/jpeg",
-            base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+            base64 = Base64.encodeToString(
+                bytes,
+                Base64.NO_WRAP
+            )
         )
 
     } finally {
         outputStream.close()
-        if (resizedBitmap !== enhancedBitmap) resizedBitmap.recycle()
-        if (enhancedBitmap !== bitmap) enhancedBitmap.recycle()
+        if (resizedBitmap !== bitmap) resizedBitmap.recycle()
         bitmap.recycle()
     }
-}
-
-/**
- * تحسين الصورة لرفع دقة OCR.
- *
- * يعالج:
- * - الصور الملتقطة بكاميرا الجوال
- * - الصور المعالجة بسكانر
- * - الجداول ذات النصوص الصغيرة
- */
-private fun enhanceImageForOcr(
-    bitmap: Bitmap
-): Bitmap {
-
-    // رفع الدقة إذا كانت الصورة صغيرة جداً
-    val minDimension = 1500
-    val width = bitmap.width
-    val height = bitmap.height
-
-    if (width < minDimension || height < minDimension) {
-
-        val scale = maxOf(
-            minDimension.toFloat() / width,
-            minDimension.toFloat() / height
-        )
-
-        val newWidth = (width * scale).toInt()
-        val newHeight = (height * scale).toInt()
-
-        return Bitmap.createScaledBitmap(
-            bitmap,
-            newWidth,
-            newHeight,
-            true // bilinear filtering للحصول على نص أوضح
-        )
-    }
-
-    return bitmap
 }
 
 
