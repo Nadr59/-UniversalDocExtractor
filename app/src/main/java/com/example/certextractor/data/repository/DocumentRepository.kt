@@ -490,6 +490,10 @@ private suspend fun verifySuspiciousFields(
     initialResults: List<ExtractionResult>
 ): List<ExtractionResult> {
 
+    if (initialResults.size != batch.size) {
+        return initialResults
+    }
+
     val verifiedResults =
         initialResults.toMutableList()
 
