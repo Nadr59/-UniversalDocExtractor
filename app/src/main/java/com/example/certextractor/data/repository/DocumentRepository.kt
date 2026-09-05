@@ -180,142 +180,161 @@ suspend fun processDocument(
 // معالجة مجموعة كبيرة من الصور  
 // ============================================================  
 
-suspend fun processBatch(  
-    uris: List<Uri>,  
-    fields: List<ExtractionField>,  
-    freeTextPrompt: String = "",  
-    isFreeTextMode: Boolean = false,  
-    onProgress: (  
-        current: Int,  
-        total: Int,  
-        result: ExtractionResult  
-    ) -> Unit  
-): List<ExtractionResult> {  
+suspend fun processBatch(
+    uris: List<Uri>,
+    fields: List<ExtractionField>,
+    freeTextPrompt: String = "",
+    isFreeTextMode: Boolean = false,
+    onProgress: (
+        current: Int,
+        total: Int,
+        result: ExtractionResult
+    ) -> Unit
+): List<ExtractionResult> {
 
-    return withContext(Dispatchers.IO) {  
+    return withContext(Dispatchers.IO) {
 
-        val allResults = mutableListOf<ExtractionResult>()  
+        val allResults = mutableListOf<ExtractionResult>()
 
-        if (uris.isEmpty()) {  
-            return@withContext emptyList()  
-        }  
+        if (uris.isEmpty()) {
+            return@withContext emptyList()
+        }
 
-        val documents = uris.mapIndexed { index, uri ->  
-            DocumentItem(  
-                index = index,  
-                uri = uri,  
-                fileName = getFileName(uri)  
-            )  
-        }  
+        val documents = uris.mapIndexed { index, uri ->
+            DocumentItem(
+                index = index,
+                uri = uri,
+                fileName = getFileName(uri)
+            )
+        }
 
-        val total = documents.size  
-        var processedCount = 0  
+        val total = documents.size
+        var processedCount = 0
 
-        val batches = documents.chunked(GEMINI_BATCH_SIZE)  
+        val batches = documents.chunked(GEMINI_BATCH_SIZE)
 
-        for (batch in batches) {  
+        for ((batchIndex, batch) in batches.withIndex()) {
 
-            var batchResults: List<IndexedResult>  
+            val batchResults: List<IndexedResult>
 
-            try {  
+            try {
 
-                batchResults = processBatchWithFallback(  
-                    batch = batch,  
-                    fields = fields,  
-                    freeTextPrompt = freeTextPrompt,  
-                    isFreeTextMode = isFreeTextMode  
-                )  
+                batchResults = processBatchWithFallback(
+                    batch = batch,
+                    fields = fields,
+                    freeTextPrompt = freeTextPrompt,
+                    isFreeTextMode = isFreeTextMode
+                )
 
-            } catch (e: DailyQuotaExceededException) {  
+            } catch (e: DailyQuotaExceededException) {
 
-                /**  
-                 * تجاوز الحصة اليومية:  
-                 *  
-                 * لا نقوم بتقسيم الدفعة ولا نعيد الطلب.  
-                 * نسجل الصور الحالية كفاشلة ونوقف بقية الدفعات.  
-                 */  
+                for (document in batch) {
 
-                for (document in batch) {  
+                    val errorResult = ExtractionResult(
+                        fileName = document.fileName,
+                        status = "error",
+                        errorMessage = e.message
+                            ?: "تم تجاوز الحصة اليومية لخدمة الذكاء الاصطناعي."
+                    )
 
-                    val errorResult = ExtractionResult(  
-                        fileName = document.fileName,  
-                        status = "error",  
-                        errorMessage = e.message  
-                            ?: "تم تجاوز الحصة اليومية لخدمة الذكاء الاصطناعي."  
-                    )  
+                    allResults.add(errorResult)
 
-                    allResults.add(errorResult)  
+                    processedCount++
 
-                    processedCount++  
+                    onProgress(
+                        processedCount,
+                        total,
+                        errorResult
+                    )
+                }
 
-                    onProgress(  
-                        processedCount,  
-                        total,  
-                        errorResult  
-                    )  
-                }  
+                break
 
-                break  
+            } catch (e: Exception) {
 
-            } catch (e: Exception) {  
+                for (document in batch) {
 
-                /**  
-                 * خطأ عادي في الدفعة.  
-                 *  
-                 * لا نوقف كامل العملية.  
-                 * نسجل كل صورة في الدفعة كفاشلة.  
-                 */  
+                    val errorResult = ExtractionResult(
+                        fileName = document.fileName,
+                        status = "error",
+                        errorMessage = getErrorMessage(e)
+                    )
 
-                batchResults = batch.map { document ->  
+                    allResults.add(errorResult)
 
-                    IndexedResult(  
-                        index = document.index,  
-                        fileName = document.fileName,  
-                        result = ExtractionResult(  
-                            fileName = document.fileName,  
-                            status = "error",  
-                            errorMessage = getErrorMessage(e)  
-                        )  
-                    )  
-                }  
-            }  
+                    processedCount++
 
-            /**  
-             * ترتيب النتائج حسب ترتيب الصور الأصلي.  
-             */  
-            val orderedBatchResults =  
-                batchResults.sortedBy { it.index }  
+                    onProgress(
+                        processedCount,
+                        total,
+                        errorResult
+                    )
+                }
 
-            for (indexedResult in orderedBatchResults) {  
+                continue
+            }
 
-                val result = indexedResult.result.copy(  
-                    fileName = indexedResult.fileName  
-                )  
+            val orderedBatchResults =
+                batchResults.sortedBy { it.index }
 
-                allResults.add(result)  
+            val resultsByDocument =
+                orderedBatchResults.groupBy { it.index }
 
-                processedCount++  
+            for (document in batch) {
 
-                onProgress(  
-                    processedCount,  
-                    total,  
-                    result  
-                )  
-            }  
+                val documentResults =
+                    resultsByDocument[document.index]
+                        .orEmpty()
 
-            /**  
-             * تأخير بسيط بين الدفعات.  
-             *  
-             * يساعد على تقليل الضغط على API.  
-             */  
-            if (batch !== batches.last()) {  
-                delay(1000L)  
-            }  
-        }  
+                if (documentResults.isEmpty()) {
 
-        allResults  
-    }  
-}  
+                    val errorResult = ExtractionResult(
+                        fileName = document.fileName,
+                        status = "error",
+                        errorMessage = "لم يتم العثور على نتيجة لهذه الصورة."
+                    )
+
+                    allResults.add(errorResult)
+
+                    processedCount++
+
+                    onProgress(
+                        processedCount,
+                        total,
+                        errorResult
+                    )
+
+                    continue
+                }
+
+                for (indexedResult in documentResults) {
+
+                    val result = indexedResult.result.copy(
+                        fileName = document.fileName
+                    )
+
+                    allResults.add(result)
+
+                    onProgress(
+                        processedCount + 1,
+                        total,
+                        result
+                    )
+                }
+
+                processedCount++
+            }
+
+            if (batchIndex < batches.lastIndex) {
+                delay(1000L)
+            }
+        }
+
+        allResults
+    }
+}
+
+
 
 // ============================================================  
 // معالجة الدفعة مع Fallback  
