@@ -546,102 +546,92 @@ private fun needsTableAlignmentRepair(
     fields: List<ExtractionField>
 ): Boolean {
 
-    /*
-     * لا نحتاج إلى الإصلاح إذا كانت الصورة أعادت
-     * سجلًا واحدًا فقط.
-     */
-    if (results.size <= 1) {
-        return false
+    if (results.size <= 1) return false
+
+    // --------------------------------------------------------
+    // 1. فحص row_number
+    // --------------------------------------------------------
+    val rowNumbers = results.mapNotNull {
+        it.values["_row_number"]?.trim()?.toIntOrNull()
     }
 
-    /*
-     * نبحث عن حقول يمكن اعتبارها حقول هوية/اسم.
-     *
-     * لا نفترض نوع الوثيقة.
-     */
-    val identityFields =
-        fields.filter { field ->
-            isPersonNameField(
-                "${field.name} ${field.description}"
-                    .trim()
-                    .lowercase()
-            )
-        }
+    if (rowNumbers.isNotEmpty()) {
 
-    /*
-     * إذا لم يوجد حقل اسم واضح، لا نخمن.
-     *
-     * هذا مهم لأن التطبيق عام وليس مخصصًا
-     * لكشوف أسماء فقط.
-     */
-    if (identityFields.isEmpty()) {
-        return false
-    }
-
-    /*
-     * --------------------------------------------------------
-     * 1. وجود اسم فارغ
-     * --------------------------------------------------------
-     *
-     * في الحالة الحالية:
-     *
-     * السجل 1 -> صحيح
-     * السجل 2 -> الاسم فارغ + بيانات الشخص الثاني
-     * السجل 3 -> اسم الشخص الثاني + بيانات الشخص الثالث
-     *
-     * هذا مؤشر قوي جدًا على انزياح الصفوف.
-     */
-    for (result in results) {
-
-        val hasEmptyIdentity =
-            identityFields.any { field ->
-
-                result.values[field.name]
-                    ?.trim()
-                    .orEmpty()
-                    .isBlank()
-            }
-
-        if (hasEmptyIdentity) {
+        // تكرار row_number → انزياح مؤكد
+        if (rowNumbers.size != rowNumbers.toSet().size) {
+            android.util.Log.d("TableRepair", "duplicate row_number detected")
             return true
         }
+
+        // عدد السجلات لا يتطابق مع أقصى row_number
+        val maxRowNumber = rowNumbers.max()
+        if (maxRowNumber != results.size) {
+            android.util.Log.d(
+                "TableRepair",
+                "rowCount=${results.size} maxRowNumber=$maxRowNumber mismatch"
+            )
+            return true
+        }
+
+        // row_number غير متسلسل
+        val sorted = rowNumbers.sorted()
+        for (i in sorted.indices) {
+            if (sorted[i] != i + 1) {
+                android.util.Log.d("TableRepair", "non-sequential row_number")
+                return true
+            }
+        }
     }
 
-    /*
-     * --------------------------------------------------------
-     * 2. تكرار اسم شخص
-     * --------------------------------------------------------
-     *
-     * لا نعتبر كل تكرار خطأ مطلقًا،
-     * لكن داخل كشف الأشخاص يعتبر مؤشرًا قويًا.
-     */
-    for (field in identityFields) {
+    // --------------------------------------------------------
+    // 2. سجل كل قيمه فارغة → صف وهمي
+    // --------------------------------------------------------
+    val hasEmptyRecord = results.any { result ->
+        val userValues = result.values.filter { !it.key.startsWith("_") }
+        userValues.isNotEmpty() && userValues.values.all { it.trim().isBlank() }
+    }
 
-        val names =
-            results.map {
-                it.values[field.name]
-                    ?.trim()
-                    .orEmpty()
-            }
-                .filter { it.isNotBlank() }
+    if (hasEmptyRecord) {
+        android.util.Log.d("TableRepair", "empty record detected")
+        return true
+    }
 
-        val normalizedNames =
-            names.map {
-                normalizeIdentityValue(it)
-            }
+    // --------------------------------------------------------
+    // 3. تكرار مرتفع في الحقول النصية
+    // --------------------------------------------------------
+    val textFields = fields.filter { field ->
+        field.enabled &&
+        !isSensitiveNumberField(
+            "${field.name} ${field.description}".lowercase()
+        ) &&
+        !isDateField(
+            "${field.name} ${field.description}".lowercase()
+        )
+    }
 
-        if (
-            normalizedNames.size >= 2 &&
-            normalizedNames.toSet().size <
-            normalizedNames.size
-        ) {
+    for (field in textFields) {
+
+        val values = results.mapNotNull {
+            it.values[field.name]?.trim()?.takeIf { v -> v.isNotBlank() }
+        }
+
+        if (values.size < 3) continue
+
+        val normalized = values.map { normalizeIdentityValue(it) }
+        val uniqueRatio = normalized.toSet().size.toDouble() / normalized.size.toDouble()
+
+        // إذا كان أقل من 70% من القيم فريدة → تكرار مشبوه
+        if (uniqueRatio < 0.7) {
+            android.util.Log.d(
+                "TableRepair",
+                "field=${field.name} uniqueRatio=$uniqueRatio"
+            )
             return true
         }
     }
 
     return false
 }
-
 
 // ============================================================
 // تطبيع قيمة الهوية للمقارنة فقط
@@ -2417,171 +2407,113 @@ private fun parseResultsArray(
     return results  
 }  
 
-private fun parseResultObject(  
-    obj: JSONObject  
-): ExtractionResult {  
 
-    val values =  
-        mutableMapOf<String, String>()  
+    private fun parseResultObject(
+    obj: JSONObject
+): ExtractionResult {
 
-    /**  
-     * ندعم:  
-     *  
-     * {  
-     *   "image_index": 1,  
-     *   "اسم الطالب": "...",  
-     *   "رقم القيد": "..."  
-     * }  
-     *  
-     * وكذلك:  
-     *  
-     * {  
-     *   "image_index": 1,  
-     *   "values": {  
-     *      "اسم الطالب": "..."  
-     *   }  
-     * }  
-     */  
+    val values = mutableMapOf<String, String>()
 
-    val nestedValues =  
-        obj.optJSONObject("values")  
+    val nestedValues = obj.optJSONObject("values")
 
-    if (nestedValues != null) {  
+    if (nestedValues != null) {
 
-        val keys =  
-            nestedValues.keys()  
+        val keys = nestedValues.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            values[key] = nestedValues.optString(key, "")
+        }
 
-        while (keys.hasNext()) {  
+    } else {
 
-            val key = keys.next()  
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
 
-            values[key] =  
-                nestedValues.optString(  
-                    key,  
-                    ""  
-                )  
-        }  
+            if (
+                key == "image_index"  ||
+                key == "row_number"   ||
+                key == "fileName"     ||
+                key == "status"       ||
+                key == "errorMessage"
+            ) continue
 
-    } else {  
+            val value = obj.opt(key)
+            when (value) {
+                is JSONArray  -> values[key] = value.toString()
+                is JSONObject -> values[key] = value.toString()
+                null          -> values[key] = ""
+                else          -> values[key] = value.toString()
+            }
+        }
+    }
 
-        val keys = obj.keys()  
+    // --------------------------------------------------------
+    // حفظ row_number كمعرف داخلي
+    // يُستخدم في needsTableAlignmentRepair
+    // لا يظهر للمستخدم في الواجهة
+    // --------------------------------------------------------
+    val rowNumber = obj.optInt("row_number", -1)
+    if (rowNumber > 0) {
+        values["_row_number"] = rowNumber.toString()
+    }
 
-        while (keys.hasNext()) {  
+    return ExtractionResult(
+        fileName     = obj.optString("fileName", ""),
+        values       = values,
+        status       = obj.optString("status", "success"),
+        errorMessage = obj.optString("errorMessage", "")
+    )
+    }
 
-            val key = keys.next()  
 
-            if (  
-                key == "image_index" ||  
-                key == "fileName" ||  
-                key == "status" ||  
-                key == "errorMessage"  
-            ) {  
-                continue  
-            }  
-
-            val value =  
-                obj.opt(key)  
-
-            when (value) {  
-
-                is JSONArray -> {  
-                    values[key] =  
-                        value.toString()  
-                }  
-
-                is JSONObject -> {  
-                    values[key] =  
-                        value.toString()  
-                }  
-
-                null -> {  
-                    values[key] = ""  
-                }  
-
-                else -> {  
-                    values[key] =  
-                        value.toString()  
-                }  
-            }  
-        }  
-    }  
-
-    return ExtractionResult(  
-        fileName = obj.optString(  
-            "fileName",  
-            ""  
-        ),  
-        values = values,  
-        status = obj.optString(  
-            "status",  
-            "success"  
-        ),  
-        errorMessage = obj.optString(  
-            "errorMessage",  
-            ""  
-        )  
-    )  
-}  
+    
 
 // ============================================================  
 // استخراج JSON من النص  
 // ============================================================  
 
-private fun extractJson(  
-    response: String  
-): String {  
 
-    var text = response.trim()  
+    private fun extractJson(
+    response: String
+): String {
 
-    /**  
-     * إزالة Markdown fences.  
-     */  
-    if (text.startsWith("```")) {  
+    var text = response.trim()
 
-        text = text  
-            .removePrefix("```json")  
-            .removePrefix("```JSON")  
-            .removePrefix("```")  
-            .removeSuffix("```")  
-            .trim()  
-    }  
+    // إزالة Markdown fences
+    if (text.startsWith("```")) {
+        text = text
+            .removePrefix("```json")
+            .removePrefix("```JSON")
+            .removePrefix("```")
+            .removeSuffix("```")
+            .trim()
+    }
 
-    /**  
-     * البحث عن Array أولاً.  
-     */  
-    val arrayStart = text.indexOf("[")  
-    val arrayEnd = text.lastIndexOf("]")  
+    // --------------------------------------------------------
+    // Object أولاً — لأن { "results": [...] } هو الشكل المطلوب
+    // --------------------------------------------------------
+    // مهم: لا نبحث عن [ أولاً لأنه موجود داخل الـObject
+    // وسيؤدي إلى اقتطاع المصفوفة الداخلية فقط
+    val objectStart = text.indexOf("{")
+    val objectEnd = text.lastIndexOf("}")
 
-    if (  
-        arrayStart >= 0 &&  
-        arrayEnd > arrayStart  
-    ) {  
-        return text.substring(  
-            arrayStart,  
-            arrayEnd + 1  
-        )  
-    }  
+    if (objectStart >= 0 && objectEnd > objectStart) {
+        return text.substring(objectStart, objectEnd + 1)
+    }
 
-    /**  
-     * ثم البحث عن Object.  
-     */  
-    val objectStart = text.indexOf("{")  
-    val objectEnd = text.lastIndexOf("}")  
+    // Array كـfallback فقط إذا لم يوجد Object
+    val arrayStart = text.indexOf("[")
+    val arrayEnd = text.lastIndexOf("]")
 
-    if (  
-        objectStart >= 0 &&  
-        objectEnd > objectStart  
-    ) {  
-        return text.substring(  
-            objectStart,  
-            objectEnd + 1  
-        )  
-    }  
+    if (arrayStart >= 0 && arrayEnd > arrayStart) {
+        return text.substring(arrayStart, arrayEnd + 1)
+    }
 
-    throw IOException(  
-        "لم يتم العثور على JSON صالح في استجابة الذكاء الاصطناعي."  
-    )  
-}  
+    throw IOException(
+        "لم يتم العثور على JSON صالح في استجابة الذكاء الاصطناعي."
+    )
+    }
 
 // ============================================================  
 // تجهيز الصورة  
