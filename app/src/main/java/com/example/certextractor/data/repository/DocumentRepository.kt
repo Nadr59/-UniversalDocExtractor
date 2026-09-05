@@ -64,8 +64,8 @@ companion object {
         10000L  
     )  
 
-    private const val MAX_IMAGE_DIMENSION = 2048  
-    private const val JPEG_QUALITY = 85  
+    private const val MAX_IMAGE_DIMENSION = 4096  
+    private const val JPEG_QUALITY = 95  
 }  
 
 /**  
@@ -2547,70 +2547,89 @@ private fun parseResultsArray(
 // تجهيز الصورة  
 // ============================================================  
 
-private fun prepareImage(  
-    uri: Uri  
-): PreparedImage {  
+private fun prepareImage(
+    uri: Uri
+): PreparedImage {
 
-    val resolver =  
-        context.contentResolver  
+    val resolver = context.contentResolver
 
-    val inputStream =  
-        resolver.openInputStream(uri)  
-            ?: throw IOException(  
-                "تعذر فتح الصورة: $uri"  
-            )  
+    val inputStream = resolver.openInputStream(uri)
+        ?: throw IOException("تعذر فتح الصورة: $uri")
 
-    val bitmap = try {  
+    val bitmap = try {
+        BitmapFactory.decodeStream(inputStream)
+            ?: throw IOException("تعذر قراءة الصورة: $uri")
+    } finally {
+        inputStream.close()
+    }
 
-        BitmapFactory.decodeStream(  
-            inputStream  
-        )  
-            ?: throw IOException(  
-                "تعذر قراءة الصورة: $uri"  
-            )  
+    // تحسين الصورة قبل الإرسال
+    val enhancedBitmap = enhanceImageForOcr(bitmap)
 
-    } finally {  
-        inputStream.close()  
-    }  
+    val resizedBitmap = resizeBitmapIfNeeded(enhancedBitmap)
 
-    val resizedBitmap =  
-        resizeBitmapIfNeeded(  
-            bitmap  
-        )  
+    val outputStream = java.io.ByteArrayOutputStream()
 
-    val outputStream =  
-        java.io.ByteArrayOutputStream()  
+    try {
+        resizedBitmap.compress(
+            Bitmap.CompressFormat.JPEG,
+            JPEG_QUALITY,
+            outputStream
+        )
 
-    try {  
+        val bytes = outputStream.toByteArray()
 
-        resizedBitmap.compress(  
-            Bitmap.CompressFormat.JPEG,  
-            JPEG_QUALITY,  
-            outputStream  
-        )  
+        return PreparedImage(
+            mimeType = "image/jpeg",
+            base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+        )
 
-        val bytes =  
-            outputStream.toByteArray()  
+    } finally {
+        outputStream.close()
+        if (resizedBitmap !== enhancedBitmap) resizedBitmap.recycle()
+        if (enhancedBitmap !== bitmap) enhancedBitmap.recycle()
+        bitmap.recycle()
+    }
+}
 
-        return PreparedImage(  
-            mimeType = "image/jpeg",  
-            base64 = Base64.encodeToString(  
-                bytes,  
-                Base64.NO_WRAP  
-            )  
-        )  
+/**
+ * تحسين الصورة لرفع دقة OCR.
+ *
+ * يعالج:
+ * - الصور الملتقطة بكاميرا الجوال
+ * - الصور المعالجة بسكانر
+ * - الجداول ذات النصوص الصغيرة
+ */
+private fun enhanceImageForOcr(
+    bitmap: Bitmap
+): Bitmap {
 
-    } finally {  
+    // رفع الدقة إذا كانت الصورة صغيرة جداً
+    val minDimension = 1500
+    val width = bitmap.width
+    val height = bitmap.height
 
-        outputStream.close()  
+    if (width < minDimension || height < minDimension) {
 
-        if (resizedBitmap !== bitmap) {  
-            resizedBitmap.recycle()  
-        }  
+        val scale = maxOf(
+            minDimension.toFloat() / width,
+            minDimension.toFloat() / height
+        )
 
-        bitmap.recycle()  
-    }  
-}  
+        val newWidth = (width * scale).toInt()
+        val newHeight = (height * scale).toInt()
+
+        return Bitmap.createScaledBitmap(
+            bitmap,
+            newWidth,
+            newHeight,
+            true // bilinear filtering للحصول على نص أوضح
+        )
+    }
+
+    return bitmap
+}
+
 
 private fun resizeBitmapIfNeeded(  
     bitmap: Bitmap  
