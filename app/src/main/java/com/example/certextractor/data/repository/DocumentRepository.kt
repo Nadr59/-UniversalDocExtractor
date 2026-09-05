@@ -400,19 +400,61 @@ suspend fun processBatch(
          */
         if (batch.size == 1) {
 
-            val document = batch.first()
+    val document = batch.first()
 
-            return parsedResults.map { result ->
+    /*
+     * Pass 1
+     *
+     * النتيجة الأولية من النموذج.
+     */
+    val initialResults =
+        parsedResults.map { result ->
 
-                IndexedResult(
-                    index = document.index,
-                    fileName = document.fileName,
-                    result = result.copy(
-                        fileName = document.fileName,
-                        status = "success"
-                    )
-                )
-            }
+            result.copy(
+                fileName = document.fileName,
+                status = "success"
+            )
+        }
+
+    /*
+     * --------------------------------------------------------
+     * Table Integrity Repair
+     * --------------------------------------------------------
+     *
+     * لا يعمل إلا إذا اكتشفنا خللًا واضحًا
+     * في سجلات جدول متعدد الصفوف.
+     *
+     * في الحالة الطبيعية:
+     *
+     * Pass 1 → النتيجة مباشرة
+     *
+     * لذلك لا توجد زيادة في عدد طلبات Mistral.
+     */
+    val finalResults =
+        if (initialResults.size > 1) {
+
+            repairTableIfNeeded(
+                image = preparedImages.first(),
+                fields = fields,
+                initialResults = initialResults
+            )
+
+        } else {
+
+            initialResults
+        }
+
+    return finalResults.map { result ->
+
+        IndexedResult(
+            index = document.index,
+            fileName = document.fileName,
+            result = result.copy(
+                fileName = document.fileName,
+                status = "success"
+            )
+        )
+    }
         }
 
         /*
