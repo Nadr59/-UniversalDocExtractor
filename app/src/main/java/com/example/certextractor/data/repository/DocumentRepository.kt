@@ -329,11 +329,6 @@ suspend fun processBatch(
 
     try {
 
-        // ============================================================
-        // PASS 1
-        // استخراج جميع الحقول والصور بالطريقة الحالية
-        // ============================================================
-
         val preparedImages = batch.map { document ->
             prepareImage(document.uri)
         }
@@ -358,42 +353,46 @@ suspend fun processBatch(
             expectedCount = batch.size
         )
 
+        if (parsedResults.isEmpty()) {
+            throw IOException(
+                "لم يتم العثور على أي نتيجة في استجابة الذكاء الاصطناعي"
+            )
+        }
+
+        /*
+         * صورة واحدة قد تحتوي على عدة سجلات.
+         * مثال: صورة جدول تحتوي على 30 شخصًا.
+         */
+        if (batch.size == 1) {
+
+            val document = batch.first()
+
+            return parsedResults.map { result ->
+
+                IndexedResult(
+                    index = document.index,
+                    fileName = document.fileName,
+                    result = result.copy(
+                        fileName = document.fileName,
+                        status = "success"
+                    )
+                )
+            }
+        }
+
+        /*
+         * عند معالجة عدة صور، يجب أن يعيد النموذج
+         * نتيجة واحدة لكل صورة حتى نستطيع ربط النتائج بالصور.
+         */
         if (parsedResults.size != batch.size) {
             throw IOException(
                 "عدد النتائج (${parsedResults.size}) لا يطابق عدد الصور (${batch.size})"
             )
         }
 
-        // ============================================================
-        // PASS 2
-        // التحقق الانتقائي لـ Mistral فقط
-        // ============================================================
-
-        val verifiedResults =
-            if (
-                !isFreeTextMode &&
-                isMistralProvider()
-            ) {
-
-                verifySuspiciousFields(
-                    batch = batch,
-                    preparedImages = preparedImages,
-                    fields = fields,
-                    initialResults = parsedResults
-                )
-
-            } else {
-                parsedResults
-            }
-
-        // ============================================================
-        // النتائج النهائية
-        // ============================================================
-
         return batch.mapIndexed { localIndex, document ->
 
-            val result =
-                verifiedResults[localIndex]
+            val result = parsedResults[localIndex]
 
             IndexedResult(
                 index = document.index,
@@ -413,7 +412,9 @@ suspend fun processBatch(
 
         if (batch.size <= 1) {
 
-            val document = batch.first()
+            val document = batch.firstOrNull()
+
+                ?: return emptyList()
 
             return listOf(
                 IndexedResult(
@@ -440,23 +441,28 @@ suspend fun processBatch(
             batch.size
         )
 
-        val firstResults = processBatchWithFallback(
-            batch = firstHalf,
-            fields = fields,
-            freeTextPrompt = freeTextPrompt,
-            isFreeTextMode = isFreeTextMode
-        )
+        val firstResults =
+            processBatchWithFallback(
+                batch = firstHalf,
+                fields = fields,
+                freeTextPrompt = freeTextPrompt,
+                isFreeTextMode = isFreeTextMode
+            )
 
-        val secondResults = processBatchWithFallback(
-            batch = secondHalf,
-            fields = fields,
-            freeTextPrompt = freeTextPrompt,
-            isFreeTextMode = isFreeTextMode
-        )
+        val secondResults =
+            processBatchWithFallback(
+                batch = secondHalf,
+                fields = fields,
+                freeTextPrompt = freeTextPrompt,
+                isFreeTextMode = isFreeTextMode
+            )
 
         return firstResults + secondResults
     }
   }
+
+        
+
       
 private suspend fun verifySuspiciousFields(
     batch: List<DocumentItem>,
