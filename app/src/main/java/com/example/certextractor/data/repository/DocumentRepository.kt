@@ -320,133 +320,503 @@ suspend fun processBatch(
 // ============================================================  
 // معالجة الدفعة مع Fallback  
 // ============================================================  
+  private suspend fun processBatchWithFallback(
+    batch: List<DocumentItem>,
+    fields: List<ExtractionField>,
+    freeTextPrompt: String,
+    isFreeTextMode: Boolean
+): List<IndexedResult> {
 
-private suspend fun processBatchWithFallback(  
-    batch: List<DocumentItem>,  
-    fields: List<ExtractionField>,  
-    freeTextPrompt: String,  
-    isFreeTextMode: Boolean  
-): List<IndexedResult> {  
+    try {
 
-    /**  
-     * في حالة وجود أكثر من صورة:  
-     * نرسلها في طلب واحد.  
-     *  
-     * إذا فشل الطلب بسبب مشكلة عادية في تحليل المجموعة،  
-     * نقسمها إلى مجموعات أصغر.  
-     *  
-     * أما 429 بسبب الحصة اليومية فلا نقسم ولا نعيد المحاولة.  
-     */  
+        // ============================================================
+        // PASS 1
+        // استخراج جميع الحقول والصور بالطريقة الحالية
+        // ============================================================
 
-    try {  
+        val preparedImages = batch.map { document ->
+            prepareImage(document.uri)
+        }
 
-        val preparedImages = batch.map { document ->  
-            prepareImage(document.uri)  
-        }  
+        val prompt = if (isFreeTextMode) {
+            DynamicPromptBuilder.buildFreeTextPrompt(
+                freeTextPrompt
+            )
+        } else {
+            DynamicPromptBuilder.buildFieldsPrompt(
+                fields
+            )
+        }
 
-        val prompt = if (isFreeTextMode) {  
-            DynamicPromptBuilder.buildFreeTextPrompt(  
-                freeTextPrompt  
-            )  
-        } else {  
-            DynamicPromptBuilder.buildFieldsPrompt(  
-                fields  
-            )  
-        }  
+        val response = callVisionApiWithRetry(
+            prompt = prompt,
+            images = preparedImages
+        )
 
-        val response = callVisionApiWithRetry(  
-            prompt = prompt,  
-            images = preparedImages  
-        )  
+        val parsedResults = parseBatchResponse(
+            response = response,
+            expectedCount = batch.size
+        )
 
-        val parsedResults = parseBatchResponse(  
-            response = response,  
-            expectedCount = batch.size  
-        )  
+        if (parsedResults.size != batch.size) {
+            throw IOException(
+                "عدد النتائج (${parsedResults.size}) لا يطابق عدد الصور (${batch.size})"
+            )
+        }
 
-        if (parsedResults.size != batch.size) {  
-            throw IOException(  
-                "عدد النتائج (${parsedResults.size}) لا يطابق عدد الصور (${batch.size})"  
-            )  
-        }  
+        // ============================================================
+        // PASS 2
+        // التحقق الانتقائي لـ Mistral فقط
+        // ============================================================
 
-        return batch.mapIndexed { localIndex, document ->  
+        val verifiedResults =
+            if (
+                !isFreeTextMode &&
+                isMistralProvider()
+            ) {
 
-            val parsedResult = parsedResults[localIndex]  
+                verifySuspiciousFields(
+                    batch = batch,
+                    preparedImages = preparedImages,
+                    fields = fields,
+                    initialResults = parsedResults
+                )
 
-            IndexedResult(  
-                index = document.index,  
-                fileName = document.fileName,  
-                result = parsedResult.copy(  
-                    fileName = document.fileName,  
-                    status = "success"  
-                )  
-            )  
-        }  
+            } else {
+                parsedResults
+            }
 
-    } catch (e: DailyQuotaExceededException) {  
+        // ============================================================
+        // النتائج النهائية
+        // ============================================================
 
-        /**  
-         * مهم جدًا:  
-         * لا نقوم بالـ fallback عند تجاوز الحصة.  
-         */  
-        throw e  
+        return batch.mapIndexed { localIndex, document ->
 
-    } catch (e: Exception) {  
+            val result =
+                verifiedResults[localIndex]
 
-        /**  
-         * إذا كانت الصورة واحدة فلا يوجد شيء لتقسيمه.  
-         */  
-        if (batch.size <= 1) {  
+            IndexedResult(
+                index = document.index,
+                fileName = document.fileName,
+                result = result.copy(
+                    fileName = document.fileName,
+                    status = "success"
+                )
+            )
+        }
 
-            val document = batch.first()  
+    } catch (e: DailyQuotaExceededException) {
 
-            return listOf(  
-                IndexedResult(  
-                    index = document.index,  
-                    fileName = document.fileName,  
-                    result = ExtractionResult(  
-                        fileName = document.fileName,  
-                        status = "error",  
-                        errorMessage = getErrorMessage(e)  
-                    )  
-                )  
-            )  
-        }  
+        throw e
 
-        /**  
-         * تقسيم الدفعة إلى نصفين.  
-         */  
-        val middle = batch.size / 2  
+    } catch (e: Exception) {
 
-        val firstHalf = batch.subList(  
-            0,  
-            middle  
-        )  
+        if (batch.size <= 1) {
 
-        val secondHalf = batch.subList(  
-            middle,  
-            batch.size  
-        )  
+            val document = batch.first()
 
-        val firstResults = processBatchWithFallback(  
-            batch = firstHalf,  
-            fields = fields,  
-            freeTextPrompt = freeTextPrompt,  
-            isFreeTextMode = isFreeTextMode  
-        )  
+            return listOf(
+                IndexedResult(
+                    index = document.index,
+                    fileName = document.fileName,
+                    result = ExtractionResult(
+                        fileName = document.fileName,
+                        status = "error",
+                        errorMessage = getErrorMessage(e)
+                    )
+                )
+            )
+        }
 
-        val secondResults = processBatchWithFallback(  
-            batch = secondHalf,  
-            fields = fields,  
-            freeTextPrompt = freeTextPrompt,  
-            isFreeTextMode = isFreeTextMode  
-        )  
+        val middle = batch.size / 2
 
-        return firstResults + secondResults  
-    }  
-}  
+        val firstHalf = batch.subList(
+            0,
+            middle
+        )
 
+        val secondHalf = batch.subList(
+            middle,
+            batch.size
+        )
+
+        val firstResults = processBatchWithFallback(
+            batch = firstHalf,
+            fields = fields,
+            freeTextPrompt = freeTextPrompt,
+            isFreeTextMode = isFreeTextMode
+        )
+
+        val secondResults = processBatchWithFallback(
+            batch = secondHalf,
+            fields = fields,
+            freeTextPrompt = freeTextPrompt,
+            isFreeTextMode = isFreeTextMode
+        )
+
+        return firstResults + secondResults
+    }
+  }
+      
+private suspend fun verifySuspiciousFields(
+    batch: List<DocumentItem>,
+    preparedImages: List<PreparedImage>,
+    fields: List<ExtractionField>,
+    initialResults: List<ExtractionResult>
+): List<ExtractionResult> {
+
+    val verifiedResults =
+        initialResults.toMutableList()
+
+    for (index in batch.indices) {
+
+        val initialResult =
+            initialResults[index]
+
+        val suspiciousFields =
+            fields.filter { field ->
+
+                shouldVerifyField(
+                    field = field,
+                    value = initialResult.values[field.name]
+                )
+            }
+
+        if (suspiciousFields.isEmpty()) {
+            continue
+        }
+
+        val verifiedValues =
+            verifyFieldsForSingleImage(
+                image = preparedImages[index],
+                fields = suspiciousFields,
+                initialValues = initialResult.values
+            )
+
+        if (verifiedValues.isEmpty()) {
+            continue
+        }
+
+        val mergedValues =
+            initialResult.values.toMutableMap()
+
+        verifiedValues.forEach { (key, value) ->
+
+            if (value.isNotBlank()) {
+                mergedValues[key] = value
+            }
+        }
+
+        verifiedResults[index] =
+            initialResult.copy(
+                values = mergedValues
+            )
+    }
+
+    return verifiedResults
+}
+
+
+private fun shouldVerifyField(
+    field: ExtractionField,
+    value: String?
+): Boolean {
+
+    if (!field.enabled) {
+        return false
+    }
+
+    val cleanValue =
+        value?.trim().orEmpty()
+
+    // لا نعيد طلبًا ثانيًا للحقل الفارغ.
+    // الهدف من المرحلة الأولى هو تحسين النتائج
+    // دون مضاعفة عدد الطلبات بلا داعٍ.
+    if (cleanValue.isBlank()) {
+        return false
+    }
+
+    val combined =
+        "${field.name} ${field.description}"
+            .trim()
+            .lowercase()
+
+    // ============================================================
+    // أسماء الأشخاص
+    // ============================================================
+
+    val personKeywords = listOf(
+        "اسم الطالب",
+        "اسم الطالبة",
+        "اسم الشخص",
+        "اسم المستفيد",
+        "اسم صاحب",
+        "اسم حامل",
+        "اسم الموظف",
+        "اسم العميل",
+        "اسم المريض",
+        "اسم الأب",
+        "اسم الأم",
+        "اسم الاب",
+        "اسم الام",
+        "الاسم الكامل",
+        "اسم الكامل"
+    )
+
+    if (
+        personKeywords.any {
+            combined.contains(it)
+        }
+    ) {
+        return true
+    }
+
+    // ============================================================
+    // أرقام حساسة
+    // ============================================================
+
+    val numberKeywords = listOf(
+        "رقم الهوية",
+        "رقم البطاقة",
+        "رقم الوثيقة",
+        "رقم الشهادة",
+        "رقم القيد",
+        "رقم السجل",
+        "رقم الملف",
+        "رقم الطلب",
+        "رقم المعاملة",
+        "رقم المرجع",
+        "الرقم الوطني"
+    )
+
+    if (
+        numberKeywords.any {
+            combined.contains(it)
+        }
+    ) {
+        return true
+    }
+
+    // ============================================================
+    // تواريخ حساسة
+    // ============================================================
+
+    val dateKeywords = listOf(
+        "تاريخ الميلاد",
+        "تاريخ الإصدار",
+        "تاريخ الانتهاء",
+        "تاريخ الوثيقة",
+        "تاريخ التسجيل",
+        "تاريخ التخرج"
+    )
+
+    if (
+        dateKeywords.any {
+            combined.contains(it)
+        }
+    ) {
+        return true
+    }
+
+    return false
+}
+private suspend fun verifyFieldsForSingleImage(
+    image: PreparedImage,
+    fields: List<ExtractionField>,
+    initialValues: Map<String, String>
+): Map<String, String> {
+
+    if (fields.isEmpty()) {
+        return emptyMap()
+    }
+
+    val fieldsDescription =
+        fields.joinToString("\n") { field ->
+
+            val description =
+                field.description
+                    .trim()
+                    .ifBlank {
+                        "اقرأ القيمة المرئية المرتبطة بهذا الحقل."
+                    }
+
+            val initialValue =
+                initialValues[field.name]
+                    ?.trim()
+                    .orEmpty()
+
+            """
+- الحقل: "${field.name}"
+  الوصف: $description
+  القراءة الأولية: "$initialValue"
+            """.trimIndent()
+        }
+
+    val jsonExample =
+        fields.joinToString(",\n") { field ->
+            "      \"${field.name}\": \"\""
+        }
+
+    val verificationPrompt = """
+أنت محرك OCR بصري في مرحلة التحقق.
+
+لديك صورة وثيقة واحدة.
+
+تحقق فقط من الحقول التالية:
+
+$fieldsDescription
+
+==================================================
+المصدر الوحيد للحقيقة
+==================================================
+
+الصورة هي المصدر الوحيد للحقيقة.
+
+القراءة الأولية ليست مصدرًا للحقيقة.
+
+استخدم القراءة الأولية للمقارنة فقط.
+
+أعد قراءة الصورة بنفسك.
+
+==================================================
+الأسماء
+==================================================
+
+إذا كان الحقل اسم شخص أو جهة:
+
+اقرأ الحروف العربية الظاهرة في الصورة.
+
+لا تخمن.
+
+لا تستخدم اسمًا مألوفًا.
+
+لا تبحث عن اسم مشابه.
+
+لا تكمل الحروف غير الواضحة.
+
+لا تصحح الاسم بناءً على المعنى.
+
+إذا كانت القراءة الأولية صحيحة بصريًا:
+أعد نفس القيمة.
+
+إذا كانت خاطئة:
+اكتب القيمة التي تظهر في الصورة.
+
+==================================================
+الأرقام
+==================================================
+
+اقرأ الأرقام من الصورة مباشرة.
+
+لا تضف رقمًا.
+
+لا تحذف رقمًا واضحًا.
+
+لا تغير ترتيب الأرقام.
+
+لا تعتمد على القراءة الأولية إذا كانت الصورة تخالفها.
+
+==================================================
+التواريخ
+==================================================
+
+اقرأ التاريخ كما يظهر في الصورة.
+
+لا تستنتج تاريخًا غير ظاهر.
+
+حافظ على الرموز الظاهرة مثل:
+
+%
+-
+/
+.
+,
+
+==================================================
+قاعدة مهمة
+==================================================
+
+إذا كان جزء من القيمة واضحًا:
+احتفظ بالجزء الواضح.
+
+إذا كان جزء غير واضح:
+لا تخمنه.
+
+إذا كانت القيمة بالكامل غير قابلة للقراءة:
+أعد "".
+
+==================================================
+JSON
+==================================================
+
+أعد JSON فقط.
+
+لا Markdown.
+
+لا ```json.
+
+لا شرح.
+
+لا نص قبل JSON.
+
+لا نص بعد JSON.
+
+استخدم الشكل التالي:
+
+{
+  "values": {
+$jsonExample
+  }
+}
+
+values يجب أن تحتوي فقط على الحقول التي طلبتها.
+
+لا تضف حقولًا جديدة.
+""".trimIndent()
+
+    return try {
+
+        val response =
+            callVisionApiWithRetry(
+                prompt = verificationPrompt,
+                images = listOf(image)
+            )
+
+        val cleanJson =
+            extractJson(response)
+
+        val root =
+            JSONObject(cleanJson)
+
+        val values =
+            root.optJSONObject("values")
+                ?: return emptyMap()
+
+        val result =
+            mutableMapOf<String, String>()
+
+        fields.forEach { field ->
+
+            val value =
+                values.optString(
+                    field.name,
+                    ""
+                ).trim()
+
+            if (value.isNotBlank()) {
+                result[field.name] = value
+            }
+        }
+
+        result
+
+    } catch (_: Exception) {
+
+        // Pass 2 تحسين اختياري.
+        // إذا فشل، نحافظ على نتيجة Pass 1.
+        emptyMap()
+    }
+}
 // ============================================================  
 // API Retry  
 // ============================================================  
@@ -586,6 +956,14 @@ private fun callVisionApi(
     }  
 }  
 
+private fun isMistralProvider(): Boolean {
+    return settings.provider
+        .trim()
+        .equals(
+            "mistral",
+            ignoreCase = true
+        )
+}
 // ============================================================  
 // Gemini Vision  
 // ============================================================  
