@@ -516,7 +516,27 @@ private suspend fun verifySuspiciousFields(
     return verifiedResults
 }
 
+/**
+ * الحد الأدنى من نقاط الاشتباه التي تؤدي إلى Pass 2.
+ *
+ * 0 - 1  : النتيجة طبيعية → لا تحقق
+ * 2      : اشتباه متوسط → تحقق
+ * 3+     : اشتباه مرتفع → تحقق
+ */
+private const val OCR_SUSPICION_THRESHOLD = 2
 
+
+/**
+ * يحدد هل القيمة تحتاج إلى Verification Pass.
+ *
+ * يعتمد على:
+ * - اسم الحقل
+ * - وصف الحقل
+ * - طبيعة القيمة المستخرجة
+ * - مؤشرات OCR المشبوهة
+ *
+ * ولا يعتمد على نوع الوثيقة.
+ */
 private fun shouldVerifyField(
     field: ExtractionField,
     value: String?
@@ -529,12 +549,29 @@ private fun shouldVerifyField(
     val cleanValue =
         value?.trim().orEmpty()
 
-    // لا نعيد طلبًا ثانيًا للحقل الفارغ.
-    // الهدف من المرحلة الأولى هو تحسين النتائج
-    // دون مضاعفة عدد الطلبات بلا داعٍ.
     if (cleanValue.isBlank()) {
         return false
     }
+
+    val score =
+        calculateOcrSuspicionScore(
+            field = field,
+            value = cleanValue
+        )
+
+    return score >= OCR_SUSPICION_THRESHOLD
+}
+
+
+/**
+ * حساب درجة الاشتباه في نتيجة OCR.
+ */
+private fun calculateOcrSuspicionScore(
+    field: ExtractionField,
+    value: String
+): Int {
+
+    var score = 0
 
     val combined =
         "${field.name} ${field.description}"
@@ -542,10 +579,204 @@ private fun shouldVerifyField(
             .lowercase()
 
     // ============================================================
-    // أسماء الأشخاص
+    // 1. تحديد طبيعة الحقل
     // ============================================================
 
-    val personKeywords = listOf(
+    val isPersonName =
+        isPersonNameField(combined)
+
+    val isSensitiveNumber =
+        isSensitiveNumberField(combined)
+
+    val isDate =
+        isDateField(combined)
+
+    // ============================================================
+    // 2. الأسماء
+    // ============================================================
+
+    if (isPersonName) {
+
+        /*
+         * الاسم المكوّن من كلمة واحدة ليس بالضرورة خطأ،
+         * لذلك نعطيه نقطة واحدة فقط.
+         */
+        val words =
+            value
+                .split(
+                    Regex("\\s+")
+                )
+                .filter {
+                    it.isNotBlank()
+                }
+
+        if (words.size == 1) {
+            score += 1
+        }
+
+        /*
+         * وجود محارف غير عربية/لاتينية متوقعة
+         * قد يشير إلى OCR غير مستقر.
+         */
+        if (
+            containsSuspiciousCharacters(
+                value
+            )
+        ) {
+            score += 2
+        }
+
+        /*
+         * وجود أرقام داخل اسم شخص مؤشر قوي.
+         */
+        if (
+            value.any { it.isDigit() }
+        ) {
+            score += 2
+        }
+
+        /*
+         * وجود رموز غير معتادة داخل الاسم.
+         */
+        if (
+            containsUnexpectedSymbols(
+                value
+            )
+        ) {
+            score += 1
+        }
+    }
+
+    // ============================================================
+    // 3. الأرقام الحساسة
+    // ============================================================
+
+    if (isSensitiveNumber) {
+
+        /*
+         * الرقم يجب أن يحتوي أساسًا على أرقام
+         * وبعض الفواصل الشائعة.
+         */
+        val digits =
+            value.count {
+                it.isDigit()
+            }
+
+        if (digits == 0) {
+            score += 3
+        }
+
+        /*
+         * وجود حروف داخل رقم حساس
+         * قد يكون طبيعيًا في بعض أرقام الوثائق،
+         * لذلك نعطي نقطتين فقط.
+         */
+        if (
+            value.any {
+                it.isLetter()
+            }
+        ) {
+            score += 2
+        }
+
+        /*
+         * رموز غير معتادة داخل الرقم.
+         */
+        if (
+            containsUnexpectedSymbols(
+                value
+            )
+        ) {
+            score += 1
+        }
+    }
+
+    // ============================================================
+    // 4. التواريخ
+    // ============================================================
+
+    if (isDate) {
+
+        /*
+         * إذا لم توجد أرقام إطلاقًا
+         * فالنتيجة مشبوهة جدًا.
+         */
+        if (
+            value.none {
+                it.isDigit()
+            }
+        ) {
+            score += 3
+        }
+
+        /*
+         * التاريخ عادة يحتوي على فاصل.
+         *
+         * لا نجبره على تنسيق معين لأن الحقول ديناميكية.
+         */
+        val hasDateSeparator =
+            value.contains("/") ||
+                    value.contains("-") ||
+                    value.contains(".")
+
+        if (!hasDateSeparator) {
+            score += 1
+        }
+
+        if (
+            containsUnexpectedSymbols(
+                value
+            )
+        ) {
+            score += 1
+        }
+    }
+
+    // ============================================================
+    // 5. مؤشرات عامة لجميع الحقول
+    // ============================================================
+
+    /*
+     * النص الذي يحتوي على سلسلة طويلة جدًا
+     * من الرموز الغريبة غالبًا ناتج OCR غير مستقر.
+     */
+    if (
+        containsSuspiciousCharacters(
+            value
+        )
+    ) {
+        score += 1
+    }
+
+    /*
+     * تكرار نفس المحرف عدة مرات بشكل غير طبيعي.
+     *
+     * مثال:
+     * "سسسسسس"
+     */
+    if (
+        hasAbnormalCharacterRepetition(
+            value
+        )
+    ) {
+        score += 2
+    }
+
+    return score
+}
+
+
+/**
+ * هل الحقل يمثل اسم شخص؟
+ *
+ * لا نعتمد على اسم ثابت للوثيقة.
+ * نبحث في name + description.
+ */
+private fun isPersonNameField(
+    text: String
+): Boolean {
+
+    val keywords = listOf(
         "اسم الطالب",
         "اسم الطالبة",
         "اسم الشخص",
@@ -560,22 +791,24 @@ private fun shouldVerifyField(
         "اسم الاب",
         "اسم الام",
         "الاسم الكامل",
-        "اسم الكامل"
+        "اسم الكامل",
+        "اسم"
     )
 
-    if (
-        personKeywords.any {
-            combined.contains(it)
-        }
-    ) {
-        return true
+    return keywords.any {
+        text.contains(it)
     }
+}
 
-    // ============================================================
-    // أرقام حساسة
-    // ============================================================
 
-    val numberKeywords = listOf(
+/**
+ * هل الحقل يمثل رقمًا حساسًا؟
+ */
+private fun isSensitiveNumberField(
+    text: String
+): Boolean {
+
+    val keywords = listOf(
         "رقم الهوية",
         "رقم البطاقة",
         "رقم الوثيقة",
@@ -589,37 +822,153 @@ private fun shouldVerifyField(
         "الرقم الوطني"
     )
 
-    if (
-        numberKeywords.any {
-            combined.contains(it)
-        }
-    ) {
-        return true
+    return keywords.any {
+        text.contains(it)
     }
+}
 
-    // ============================================================
-    // تواريخ حساسة
-    // ============================================================
 
-    val dateKeywords = listOf(
+/**
+ * هل الحقل يمثل تاريخًا؟
+ */
+private fun isDateField(
+    text: String
+): Boolean {
+
+    val keywords = listOf(
         "تاريخ الميلاد",
         "تاريخ الإصدار",
         "تاريخ الانتهاء",
         "تاريخ الوثيقة",
         "تاريخ التسجيل",
-        "تاريخ التخرج"
+        "تاريخ التخرج",
+        "تاريخ"
     )
 
-    if (
-        dateKeywords.any {
-            combined.contains(it)
+    return keywords.any {
+        text.contains(it)
+    }
+}
+
+
+/**
+ * يكتشف محارف غير متوقعة في OCR.
+ *
+ * نسمح بالعربية واللاتينية والأرقام
+ * وبعض علامات الترقيم الطبيعية.
+ */
+private fun containsSuspiciousCharacters(
+    value: String
+): Boolean {
+
+    return value.any { char ->
+
+        val isArabic =
+            char in '\u0600'..'\u06FF'
+
+        val isArabicSupplement =
+            char in '\u0750'..'\u077F'
+
+        val isLatin =
+            char in 'A'..'Z' ||
+                    char in 'a'..'z'
+
+        val isDigit =
+            char.isDigit()
+
+        val isWhitespace =
+            char.isWhitespace()
+
+        val isNormalPunctuation =
+            char in listOf(
+                '/',
+                '-',
+                '_',
+                '.',
+                ',',
+                '%',
+                ':',
+                '(',
+                ')'
+            )
+
+        !isArabic &&
+                !isArabicSupplement &&
+                !isLatin &&
+                !isDigit &&
+                !isWhitespace &&
+                !isNormalPunctuation
+    }
+}
+
+
+/**
+ * رموز غير متوقعة أكثر تحديدًا.
+ */
+private fun containsUnexpectedSymbols(
+    value: String
+): Boolean {
+
+    return value.any { char ->
+
+        if (
+            char.isLetterOrDigit() ||
+            char.isWhitespace()
+        ) {
+            false
+        } else {
+
+            char !in listOf(
+                '/',
+                '-',
+                '_',
+                '.',
+                ',',
+                '%',
+                ':',
+                '(',
+                ')'
+            )
         }
-    ) {
-        return true
+    }
+}
+
+
+/**
+ * يكتشف التكرار غير الطبيعي للحروف.
+ */
+private fun hasAbnormalCharacterRepetition(
+    value: String
+): Boolean {
+
+    if (value.length < 5) {
+        return false
+    }
+
+    var repetition = 1
+
+    for (index in 1 until value.length) {
+
+        if (
+            value[index] ==
+            value[index - 1]
+        ) {
+
+            repetition++
+
+            if (repetition >= 4) {
+                return true
+            }
+
+        } else {
+            repetition = 1
+        }
     }
 
     return false
 }
+
+
 private suspend fun verifyFieldsForSingleImage(
     image: PreparedImage,
     fields: List<ExtractionField>,
