@@ -523,7 +523,7 @@ private suspend fun verifySuspiciousFields(
  * 2      : اشتباه متوسط → تحقق
  * 3+     : اشتباه مرتفع → تحقق
  */
-private const val OCR_SUSPICION_THRESHOLD = 2
+//private const val OCR_SUSPICION_THRESHOLD = 2
 
 
 /**
@@ -559,7 +559,7 @@ private fun shouldVerifyField(
             value = cleanValue
         )
 
-    return score >= OCR_SUSPICION_THRESHOLD
+    return score >= 2
 }
 
 
