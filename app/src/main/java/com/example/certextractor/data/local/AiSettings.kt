@@ -15,7 +15,7 @@ class AiSettings(context: Context) {
         set(value) = prefs.edit().putString("groq_key", value).apply()
 
     var groqModel: String
-        get() = prefs.getString("groq_model", "") ?: ""
+        get() = prefs.getString("groq_model", "meta-llama/llama-4-scout-17b-16e-instruct") ?: "meta-llama/llama-4-scout-17b-16e-instruct"
         set(value) = prefs.edit().putString("groq_model", value).apply()
 
     var openrouterKey: String
@@ -23,7 +23,7 @@ class AiSettings(context: Context) {
         set(value) = prefs.edit().putString("openrouter_key", value).apply()
 
     var openrouterModel: String
-        get() = prefs.getString("openrouter_model", "google/gemini-2.5-flash-preview:free") ?: "google/gemini-2.5-flash-preview:free"
+        get() = prefs.getString("openrouter_model", "google/gemini-2.5-flash") ?: "google/gemini-2.5-flash"
         set(value) = prefs.edit().putString("openrouter_model", value).apply()
 
     var openaiKey: String
@@ -38,16 +38,34 @@ class AiSettings(context: Context) {
         get() = prefs.getString("gemini_key", "") ?: ""
         set(value) = prefs.edit().putString("gemini_key", value).apply()
 
+    // النموذج الافتراضي: gemini-3.6-flash
+    // النماذج المتاحة الفعلية من مفتاحك:
+    // gemini-2.5-flash
+    // gemini-2.5-flash-lite
+    // gemini-2.5-pro
+    // gemini-3.5-flash
+    // gemini-3.5-flash-lite
+    // gemini-3.6-flash  ← الأفضل حالياً
+    // gemini-3.7-flash
+    // gemini-3.8-flash
+    // gemini-flash-latest
+    // gemini-flash-lite-latest
+    // gemini-pro-latest
     var geminiModel: String
-        get() = prefs.getString("gemini_model", "gemini-2.5-flash") ?: "gemini-2.5-flash"
+        get() = prefs.getString("gemini_model", "gemini-3.6-flash") ?: "gemini-3.6-flash"
         set(value) = prefs.edit().putString("gemini_model", value).apply()
 
     var mistralKey: String
         get() = prefs.getString("mistral_key", "") ?: ""
         set(value) = prefs.edit().putString("mistral_key", value).apply()
 
+    // النماذج المتاحة في Mistral:
+    // pixtral-12b-2409     ← vision، مجاني، ضعيف في الجداول العربية
+    // pixtral-large-2411   ← vision، مدفوع، أفضل
+    // mistral-small-latest ← نص فقط، لا يدعم الصور
+    // mistral-large-latest ← نص فقط، لا يدعم الصور
     var mistralModel: String
-        get() = prefs.getString("mistral_model", "pixtral-12b-2409") ?: "pixtral-12b-2409"
+        get() = prefs.getString("mistral_model", "pixtral-large-2411") ?: "pixtral-large-2411"
         set(value) = prefs.edit().putString("mistral_model", value).apply()
 
     var customUrl: String
