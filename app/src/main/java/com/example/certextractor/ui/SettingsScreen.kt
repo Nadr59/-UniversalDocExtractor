@@ -147,66 +147,74 @@ fun SettingsScreen(
             when (provider) {
 
                 "gemini" -> {
-                    InfoCard(
-                        "Free tier available. Get key at aistudio.google.com/apikey\n" +
-                        "1. Go to aistudio.google.com/apikey\n" +
-                        "2. Create API key\n" +
-                        "3. Restrict to Gemini API only when prompted"
-                    )
-                    KeyField(
-                        label = "Gemini API Key",
-                        value = geminiKey,
-                        onValueChange = { geminiKey = it; saved = false },
-                        showKey = showKeys,
-                        placeholder = "AIza..."
-                    )
-                    VisionModelDropdown(
-                        label = "Model",
-                        models = listOf(
-                            "gemini-2.5-flash" to "Gemini 2.5 Flash (Recommended)",
-                            "gemini-2.5-flash-lite" to "Gemini 2.5 Flash-Lite (Fastest)",
-                            "gemini-2.5-pro" to "Gemini 2.5 Pro (Best Quality)",
-                            "gemini-3.6-flash" to "Gemini 3.6 Flash (Latest)",
-                            "gemini-3.7-flash" to "Gemini 3.7 Flash (Newest)"
-                        ),
-                        selected = geminiModel,
-                        onSelect = { geminiModel = it; saved = false }
-                    )
+    InfoCard(
+        "Free tier available. Get key at aistudio.google.com/apikey\n" +
+        "1. Go to aistudio.google.com/apikey\n" +
+        "2. Create API key\n" +
+        "3. Restrict to Gemini API only when prompted"
+    )
+    KeyField(
+        label = "Gemini API Key",
+        value = geminiKey,
+        onValueChange = { geminiKey = it; saved = false },
+        showKey = showKeys,
+        placeholder = "AIza..."
+    )
+    VisionModelDropdown(
+        label = "Model",
+        models = listOf(
+            "gemini-3.6-flash"      to "Gemini 3.6 Flash ⭐ (Recommended)",
+            "gemini-3.7-flash"      to "Gemini 3.7 Flash (Newer)",
+            "gemini-3.8-flash"      to "Gemini 3.8 Flash (Newest)",
+            "gemini-3.5-flash"      to "Gemini 3.5 Flash",
+            "gemini-3.5-flash-lite" to "Gemini 3.5 Flash-Lite (Fast)",
+            "gemini-2.5-flash"      to "Gemini 2.5 Flash",
+            "gemini-2.5-flash-lite" to "Gemini 2.5 Flash-Lite",
+            "gemini-2.5-pro"        to "Gemini 2.5 Pro (Best Quality)",
+            "gemini-flash-latest"   to "Gemini Flash Latest",
+            "gemini-pro-latest"     to "Gemini Pro Latest"
+        ),
+        selected = geminiModel,
+        onSelect = { geminiModel = it; saved = false }
+    )
                 }
 
                 "openrouter" -> {
-                    InfoCard(
-                        "Get key at openrouter.ai/keys\n" +
-                        "Some models have free tier"
-                    )
-                    KeyField(
-                        label = "OpenRouter API Key",
-                        value = openrouterKey,
-                        onValueChange = { openrouterKey = it; saved = false },
-                        showKey = showKeys,
-                        placeholder = "sk-or-..."
-                    )
-                    VisionModelDropdown(
-                        label = "Model",
-                        models = listOf(
-                            "google/gemini-2.5-flash-preview:free" to "Gemini 2.5 Flash (Free)",
-                            "google/gemini-2.0-flash-exp:free" to "Gemini 2.0 Flash (Free)",
-                            "qwen/qwen-2.5-vl-72b-instruct:free" to "Qwen 2.5 VL 72B (Free)",
-                            "mistralai/pixtral-12b" to "Pixtral 12B"
-                        ),
-                        selected = openrouterModel,
-                        onSelect = { openrouterModel = it; saved = false }
-                    )
-                    OutlinedTextField(
-                        value = openrouterModel,
-                        onValueChange = { openrouterModel = it; saved = false },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Or type model name") },
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp)
-                    )
+    InfoCard(
+        "Get key at openrouter.ai/keys\n" +
+        "Some models have free tier"
+    )
+    KeyField(
+        label = "OpenRouter API Key",
+        value = openrouterKey,
+        onValueChange = { openrouterKey = it; saved = false },
+        showKey = showKeys,
+        placeholder = "sk-or-..."
+    )
+    VisionModelDropdown(
+        label = "Model",
+        models = listOf(
+            "google/gemini-2.5-flash"              to "Gemini 2.5 Flash ⭐",
+            "google/gemini-2.5-flash:free"         to "Gemini 2.5 Flash (Free)",
+            "google/gemini-2.0-flash-exp:free"     to "Gemini 2.0 Flash (Free)",
+            "qwen/qwen-2.5-vl-72b-instruct:free"   to "Qwen 2.5 VL 72B (Free)",
+            "meta-llama/llama-3.2-90b-vision-instruct" to "Llama 3.2 90B Vision",
+            "mistralai/pixtral-large-2411"         to "Pixtral Large",
+            "mistralai/pixtral-12b"                to "Pixtral 12B",
+            "anthropic/claude-3.5-sonnet"          to "Claude 3.5 Sonnet"
+        ),
+        selected = openrouterModel,
+        onSelect = { openrouterModel = it; saved = false }
+    )
+    OutlinedTextField(
+        value = openrouterModel,
+        onValueChange = { openrouterModel = it; saved = false },
+        modifier = Modifier.fillMaxWidth(),
+        label = { Text("Or type model name") },
+        singleLine = true,
+        shape = RoundedCornerShape(12.dp)
+    )
                 }
-
                 "groq" -> {
                     Card(
                         colors = CardDefaults.cardColors(
@@ -267,22 +275,39 @@ fun SettingsScreen(
                 }
 
                 "mistral" -> {
-                    KeyField(
-                        label = "Mistral API Key",
-                        value = mistralKey,
-                        onValueChange = { mistralKey = it; saved = false },
-                        showKey = showKeys,
-                        placeholder = "key..."
-                    )
-                    VisionModelDropdown(
-                        label = "Vision Model",
-                        models = listOf(
-                            "pixtral-12b-2409" to "Pixtral 12B",
-                            "mistral-large-latest" to "Mistral Large"
-                        ),
-                        selected = mistralModel,
-                        onSelect = { mistralModel = it; saved = false }
-                    )
+    InfoCard(
+        "Get key at console.mistral.ai\n" +
+        "Note: Only Pixtral models support vision/images"
+    )
+    KeyField(
+        label = "Mistral API Key",
+        value = mistralKey,
+        onValueChange = { mistralKey = it; saved = false },
+        showKey = showKeys,
+        placeholder = "key..."
+    )
+    VisionModelDropdown(
+        label = "Vision Model",
+        models = listOf(
+            "pixtral-large-2411" to "Pixtral Large ⭐ (Best)",
+            "pixtral-12b-2409"   to "Pixtral 12B (Lighter)"
+        ),
+        selected = mistralModel,
+        onSelect = { mistralModel = it; saved = false }
+    )
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
+        ),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Text(
+            "⚠️ mistral-small و mistral-large لا يدعمان الصور",
+            modifier = Modifier.padding(12.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error
+        )
+    }
                 }
 
                 "custom" -> {
